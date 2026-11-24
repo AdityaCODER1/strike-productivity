@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Trash2, X } from 'lucide-react';
 import { LogEntry } from '../types/models';
+import { StudySubjectId, isStudyTaggedCategory } from '../data/ncertCatalog';
 import { useStrike } from '../state/StrikeContext';
+import { ChapterPickerControl } from './ChapterPickerControl';
 
 interface LogEditSheetProps {
   entry: LogEntry | null;
@@ -9,25 +11,37 @@ interface LogEditSheetProps {
 }
 
 export const LogEditSheet: React.FC<LogEditSheetProps> = ({ entry, onClose }) => {
-  const { preferences, updateLog, deleteLog, showToast } = useStrike();
+  const { preferences, studySettings, updateLog, deleteLog, showToast } = useStrike();
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [dateKey, setDateKey] = useState('');
+  const [subjectId, setSubjectId] = useState<StudySubjectId | undefined>(undefined);
+  const [chapterId, setChapterId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     if (entry) {
       setTitle(entry.title);
       setCategory(entry.category);
       setDateKey(entry.dateKey);
+      setSubjectId(entry.subjectId);
+      setChapterId(entry.chapterId);
     }
   }, [entry]);
 
   if (!entry) return null;
 
+  const isStudyCategory = isStudyTaggedCategory(category);
+
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    updateLog(entry.id, { title: title.trim(), category, dateKey });
+    updateLog(entry.id, {
+      title: title.trim(),
+      category,
+      dateKey,
+      subjectId: isStudyCategory ? subjectId : undefined,
+      chapterId: isStudyCategory ? chapterId : undefined,
+    });
     showToast('Activity updated', 'success');
     onClose();
   };
@@ -92,6 +106,22 @@ export const LogEditSheet: React.FC<LogEditSheetProps> = ({ entry, onClose }) =>
             })}
           </div>
         </div>
+
+        {isStudyCategory && (
+          <div className="field-label">
+            Subject &amp; NCERT Chapter
+            <ChapterPickerControl
+              subjectId={subjectId}
+              chapterId={chapterId}
+              includeArchived={studySettings.showArchivedNcert}
+              compact
+              onChange={({ subjectId: nextSub, chapterId: nextChap }) => {
+                setSubjectId(nextSub);
+                setChapterId(nextChap);
+              }}
+            />
+          </div>
+        )}
 
         <label className="field-label">
           Date

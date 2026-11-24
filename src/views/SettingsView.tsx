@@ -54,6 +54,9 @@ export const SettingsView: React.FC = () => {
   const {
     tasks,
     logs,
+    chapterProgress,
+    doubts,
+    studySettings,
     preferences,
     updatePreferences,
     addCategory,
@@ -245,13 +248,21 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleExportMarkdown = () => {
-    const md = serializeToMarkdown(tasks, logs);
+    const md = serializeToMarkdown(tasks, logs, new Date(), {
+      chapterProgress,
+      doubts,
+      studySettings,
+    });
     triggerFileDownload(`strike-export-${toDateKey()}.md`, md, 'text/markdown;charset=utf-8');
     showToast('Exported Markdown journal', 'success');
   };
 
   const handleExportJson = () => {
-    const json = serializeToJson(tasks, logs, preferences.categories);
+    const json = serializeToJson(tasks, logs, preferences.categories, new Date(), {
+      chapterProgress,
+      doubts,
+      studySettings,
+    });
     triggerFileDownload(`strike-backup-${toDateKey()}.json`, json, 'application/json');
     showToast('Exported JSON backup', 'success');
   };
@@ -750,7 +761,7 @@ export const SettingsView: React.FC = () => {
             Own Your Data
           </h2>
           <span className="log-meta-note">
-            {tasks.length} tasks · {logs.length} logs
+            {tasks.length} tasks · {logs.length} logs · {doubts.length} doubts
           </span>
         </div>
 

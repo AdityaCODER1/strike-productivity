@@ -62,4 +62,68 @@ describe('exporter service', () => {
     expect(restored.logs).toEqual(sampleLogs);
     expect(restored.categories).toEqual(DEFAULT_CATEGORIES);
   });
+
+  it('exports and restores v2 NCERT chapterProgress, doubts, and studySettings', () => {
+    const extras = {
+      chapterProgress: {
+        'phy-12-ray-optics': {
+          chapterId: 'phy-12-ray-optics',
+          subjectId: 'physics' as const,
+          coveragePercent: 65,
+          coverageSource: 'ai' as const,
+          aiSummary: 'Covered reflection & refraction; optical instruments left.',
+          completedPyqYears: [2024, 2023],
+          updatedAt: 9000,
+        },
+      },
+      doubts: [
+        {
+          id: 'doubt_1',
+          subjectId: 'physics' as const,
+          chapterId: 'phy-12-ray-optics',
+          title: 'TIR critical angle',
+          questionText: 'Find critical angle when μ = √2',
+          imageDataUrl: null,
+          pyqYear: 2022,
+          status: 'open' as const,
+          resolutionNote: 'sin C = 1/μ = 1/√2 => 45°',
+          source: 'manual' as const,
+          createdAt: 8000,
+          updatedAt: 8000,
+        },
+      ],
+      studySettings: {
+        showArchivedNcert: true,
+        pyqYearStart: 2015,
+        pyqYearEnd: 2026,
+      },
+    };
+
+    const json = serializeToJson(
+      sampleTasks,
+      sampleLogs,
+      DEFAULT_CATEGORIES,
+      new Date(2026, 10, 23, 12, 0, 0),
+      extras
+    );
+    const restored = parseImportJson(json);
+
+    expect(restored.version).toBe(2);
+    expect(restored.chapterProgress?.['phy-12-ray-optics'].coveragePercent).toBe(65);
+    expect(restored.chapterProgress?.['phy-12-ray-optics'].completedPyqYears).toEqual([2024, 2023]);
+    expect(restored.doubts).toHaveLength(1);
+    expect(restored.doubts?.[0].pyqYear).toBe(2022);
+    expect(restored.studySettings).toEqual(extras.studySettings);
+
+    const md = serializeToMarkdown(
+      sampleTasks,
+      sampleLogs,
+      new Date(2026, 10, 23, 12, 0, 0),
+      extras
+    );
+    expect(md).toContain('## NCERT Chapter Progress');
+    expect(md).toContain('Ray Optics and Optical Instruments**: 65% · PYQs: 2024, 2023');
+    expect(md).toContain('## Doubts Archive');
+    expect(md).toContain('TIR critical angle');
+  });
 });

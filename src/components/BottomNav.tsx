@@ -1,5 +1,5 @@
 import React from 'react';
-import { CalendarDays, CheckCircle2, Settings, Sparkles } from 'lucide-react';
+import { BookOpen, CalendarDays, CheckCircle2, Settings, Sparkles } from 'lucide-react';
 import { ActiveTab } from '../types/models';
 
 interface BottomNavProps {
@@ -7,6 +7,7 @@ interface BottomNavProps {
   onSelectTab: (tab: ActiveTab) => void;
   openTodayCount: number;
   suggestionsCount: number;
+  openDoubtsCount?: number;
 }
 
 const NAV_ITEMS: Array<{
@@ -16,6 +17,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { id: 'plan', label: 'Plan', icon: CheckCircle2 },
   { id: 'today', label: 'Today', icon: Sparkles },
+  { id: 'study', label: 'Study', icon: BookOpen },
   { id: 'history', label: 'History', icon: CalendarDays },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
@@ -25,6 +27,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   onSelectTab,
   openTodayCount,
   suggestionsCount,
+  openDoubtsCount = 0,
 }) => {
   return (
     <div className="bottom-nav-wrap">
@@ -37,6 +40,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               ? suggestionsCount
               : item.id === 'plan' && openTodayCount > 0 && !isActive
               ? openTodayCount
+              : item.id === 'study' && openDoubtsCount > 0 && !isActive
+              ? openDoubtsCount
               : 0;
 
           return (
@@ -48,7 +53,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               aria-current={isActive ? 'page' : undefined}
               onClick={() => onSelectTab(item.id)}
             >
-              <Icon size={22} strokeWidth={isActive ? 2.25 : 1.85} />
+              <Icon size={21} strokeWidth={isActive ? 2.25 : 1.85} />
               <span>{item.label}</span>
               {badge > 0 && (
                 <span className="nav-badge" aria-label={`${badge} pending`}>

@@ -1,3 +1,5 @@
+import { StudySubjectId } from '../data/ncertCatalog';
+
 export type TaskBucket = 'today' | 'later';
 
 export type CategoryColorToken =
@@ -28,14 +30,28 @@ export const DEFAULT_CATEGORIES: CategoryConfig[] = [
   { id: 'cat-personal', name: 'Personal', colorToken: 'teal' },
   { id: 'cat-health', name: 'Health', colorToken: 'green' },
   { id: 'cat-learning', name: 'Learning', colorToken: 'amber' },
-  { id: 'cat-home', name: 'Home', colorToken: 'coral' },
+  { id: 'cat-doubts', name: 'Doubts', colorToken: 'coral' },
+  { id: 'cat-home', name: 'Home', colorToken: 'slate' },
   { id: 'cat-social', name: 'Social', colorToken: 'cyan' },
 ];
+
+export interface StudySettings {
+  showArchivedNcert: boolean;
+  pyqYearStart: number;
+  pyqYearEnd: number;
+}
+
+export const DEFAULT_STUDY_SETTINGS: StudySettings = {
+  showArchivedNcert: false,
+  pyqYearStart: 2013,
+  pyqYearEnd: 2026,
+};
 
 export interface UserPreferences {
   geminiApiKey: string;
   geminiModel: string;
   categories: CategoryConfig[];
+  studySettings?: StudySettings;
   updatedAt: number;
 }
 
@@ -48,6 +64,8 @@ export interface TaskItem {
   completedDateKey: string | null;
   linkedLogEntryId: string | null;
   category?: string;
+  subjectId?: StudySubjectId;
+  chapterId?: string;
   order: number;
   createdAt: number;
   updatedAt: number;
@@ -60,9 +78,41 @@ export interface LogEntry {
   dateKey: string; // Local YYYY-MM-DD
   title: string;
   category: string;
+  subjectId?: StudySubjectId;
+  chapterId?: string;
   source: LogEntrySource;
   linkedTaskId: string | null;
   rawDumpId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ChapterStudyState {
+  chapterId: string;
+  subjectId: StudySubjectId;
+  coveragePercent: number;
+  coverageSource: 'ai' | 'manual';
+  aiSummary?: string;
+  lastEvaluatedAt?: number;
+  completedPyqYears: number[];
+  updatedAt: number;
+}
+
+export type DoubtStatus = 'open' | 'resolved';
+export type DoubtSource = 'manual' | 'photo_ocr' | 'brain_dump';
+
+export interface DoubtItem {
+  id: string;
+  subjectId: StudySubjectId;
+  chapterId: string;
+  title: string;
+  questionText: string;
+  imageDataUrl?: string | null;
+  pyqYear?: number | null;
+  status: DoubtStatus;
+  resolutionNote: string;
+  aiExplanation?: string;
+  source: DoubtSource;
   createdAt: number;
   updatedAt: number;
 }
@@ -72,6 +122,8 @@ export interface SuggestedTaskItem {
   title: string;
   suggestedBucket: TaskBucket;
   category: string;
+  subjectId?: StudySubjectId;
+  chapterId?: string;
 }
 
 export interface MatchedOpenTaskItem {
@@ -99,12 +151,16 @@ export interface FirebaseWebConfig {
 }
 
 export interface StrikeExportPayload {
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   app: 'Strike';
   tasks: TaskItem[];
   logs: LogEntry[];
   categories: CategoryConfig[];
+  chapterProgress?: Record<string, ChapterStudyState>;
+  doubts?: DoubtItem[];
+  studySettings?: StudySettings;
 }
 
-export type ActiveTab = 'plan' | 'today' | 'history' | 'settings';
+export type ActiveTab = 'plan' | 'today' | 'study' | 'history' | 'settings';
+

@@ -1,3 +1,4 @@
+import { StudySubjectId } from '../data/ncertCatalog';
 import { CategoryConfig, LogEntry, TaskBucket, TaskItem } from '../types/models';
 import { createId, toDateKey } from '../utils/date';
 
@@ -10,7 +11,7 @@ export function createTaskRecord(
   title: string,
   bucket: TaskBucket,
   existingTasks: TaskItem[],
-  options?: { category?: string; now?: number }
+  options?: { category?: string; subjectId?: StudySubjectId; chapterId?: string; now?: number }
 ): TaskItem {
   const trimmed = title.trim();
   const now = options?.now ?? Date.now();
@@ -25,6 +26,8 @@ export function createTaskRecord(
     completedDateKey: null,
     linkedLogEntryId: null,
     category: options?.category,
+    subjectId: options?.subjectId,
+    chapterId: options?.chapterId,
     order: minOrder - 1,
     createdAt: now,
     updatedAt: now,
@@ -67,6 +70,8 @@ export function toggleTaskCompletionLogic(
       dateKey: todayKey,
       title: target.title,
       category: resolvedCategory,
+      subjectId: target.subjectId,
+      chapterId: target.chapterId,
       source: 'task_checkoff',
       linkedTaskId: target.id,
       createdAt: now,

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ArrowDownRight,
   ArrowUpRight,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
@@ -10,15 +11,18 @@ import {
   Sun,
   Trash2,
 } from 'lucide-react';
+import { StudySubjectId } from '../data/ncertCatalog';
 import { useStrike } from '../state/StrikeContext';
 import { TaskBucket, TaskItem } from '../types/models';
 import { toDateKey } from '../utils/date';
 import { CategoryBadge } from '../components/CategoryBadge';
+import { ChapterPickerControl, ChapterTagChip } from '../components/ChapterPickerControl';
 
 export const PlanView: React.FC = () => {
   const {
     tasks,
     preferences,
+    studySettings,
     syncStatus,
     addTask,
     updateTask,
@@ -29,6 +33,9 @@ export const PlanView: React.FC = () => {
 
   const [draftTitle, setDraftTitle] = useState('');
   const [draftBucket, setDraftBucket] = useState<TaskBucket>('today');
+  const [tagAsLearning, setTagAsLearning] = useState(false);
+  const [draftSubjectId, setDraftSubjectId] = useState<StudySubjectId | undefined>(undefined);
+  const [draftChapterId, setDraftChapterId] = useState<string | undefined>(undefined);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [showCompletedToday, setShowCompletedToday] = useState(true);
@@ -59,7 +66,12 @@ export const PlanView: React.FC = () => {
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     if (!draftTitle.trim()) return;
-    addTask(draftTitle, draftBucket);
+    addTask(
+      draftTitle,
+      draftBucket,
+      tagAsLearning ? 'Learning' : undefined,
+      tagAsLearning ? { subjectId: draftSubjectId, chapterId: draftChapterId } : undefined
+    );
     setDraftTitle('');
   };
 
@@ -116,9 +128,14 @@ export const PlanView: React.FC = () => {
             </button>
           )}
 
-          {task.category && (
-            <div className="task-meta">
-              <CategoryBadge name={task.category} categories={preferences.categories} />
+          {(task.category || task.chapterId || task.subjectId) && (
+            <div className="task-meta" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {task.category && (
+                <CategoryBadge name={task.category} categories={preferences.categories} />
+              )}
+              {(task.chapterId || task.subjectId) && (
+                <ChapterTagChip chapterId={task.chapterId} subjectId={task.subjectId} />
+              )}
             </div>
           )}
         </div>
@@ -193,7 +210,11 @@ export const PlanView: React.FC = () => {
             type="text"
             className="ios-input"
             placeholder={
-              draftBucket === 'today' ? 'Capture a task for today…' : 'Capture something for later…'
+              tagAsLearning
+                ? 'Capture a Learning study task…'
+                : draftBucket === 'today'
+                ? 'Capture a task for today…'
+                : 'Capture something for later…'
             }
             value={draftTitle}
             onChange={(e) => setDraftTitle(e.target.value)}
@@ -235,8 +256,29 @@ export const PlanView: React.FC = () => {
               Later
             </button>
           </div>
-          <span className="field-hint">Checking off logs to Today</span>
+          <button
+            type="button"
+            className={`filter-pill ${tagAsLearning ? 'filter-pill--active' : ''}`}
+            aria-pressed={tagAsLearning}
+            onClick={() => setTagAsLearning((v) => !v)}
+          >
+            <BookOpen size={12} />
+            Learning
+          </button>
         </div>
+
+        {tagAsLearning && (
+          <ChapterPickerControl
+            subjectId={draftSubjectId}
+            chapterId={draftChapterId}
+            includeArchived={studySettings.showArchivedNcert}
+            compact
+            onChange={({ subjectId: nextSub, chapterId: nextChap }) => {
+              setDraftSubjectId(nextSub);
+              setDraftChapterId(nextChap);
+            }}
+          />
+        )}
       </form>
 
       {/* Today Bucket */}

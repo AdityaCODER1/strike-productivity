@@ -3,6 +3,7 @@ import { ActiveTab } from './types/models';
 import { StrikeProvider, useStrike } from './state/StrikeContext';
 import { PlanView } from './views/PlanView';
 import { TodayView } from './views/TodayView';
+import { StudyView } from './views/StudyView';
 import { HistoryView } from './views/HistoryView';
 import { SettingsView } from './views/SettingsView';
 import { BottomNav } from './components/BottomNav';
@@ -10,11 +11,16 @@ import { SuggestionsSheet } from './components/SuggestionsSheet';
 
 const StrikeShell: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('today');
-  const { tasks, pendingSuggestions, toast } = useStrike();
+  const { tasks, doubts, pendingSuggestions, toast } = useStrike();
 
   const openTodayCount = useMemo(
     () => tasks.filter((t) => !t.completed && t.bucket === 'today').length,
     [tasks]
+  );
+
+  const openDoubtsCount = useMemo(
+    () => doubts.filter((d) => d.status === 'open').length,
+    [doubts]
   );
 
   const suggestionsCount =
@@ -32,6 +38,7 @@ const StrikeShell: React.FC = () => {
       <main className="app-main">
         {activeTab === 'plan' && <PlanView />}
         {activeTab === 'today' && <TodayView onOpenSettings={() => setActiveTab('settings')} />}
+        {activeTab === 'study' && <StudyView />}
         {activeTab === 'history' && <HistoryView />}
         {activeTab === 'settings' && <SettingsView />}
       </main>
@@ -41,6 +48,7 @@ const StrikeShell: React.FC = () => {
         onSelectTab={setActiveTab}
         openTodayCount={openTodayCount}
         suggestionsCount={suggestionsCount}
+        openDoubtsCount={openDoubtsCount}
       />
 
       <SuggestionsSheet />

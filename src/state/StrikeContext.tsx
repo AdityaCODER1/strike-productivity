@@ -1,15 +1,27 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
 import {
+  StudySubjectId,
+  getChapterById,
+  getPyqYearsRange,
+  getSubjectMeta,
+  isLearningCategoryName,
+} from '../data/ncertCatalog';
+import {
   CategoryColorToken,
   CategoryConfig,
+  ChapterStudyState,
   DEFAULT_CATEGORIES,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_STUDY_SETTINGS,
+  DoubtItem,
+  DoubtSource,
   FirebaseWebConfig,
   LogEntry,
   MatchedOpenTaskItem,
   PendingSuggestions,
   StrikeExportPayload,
+  StudySettings,
   SuggestedTaskItem,
   TaskBucket,
   TaskItem,
@@ -23,10 +35,21 @@ import {
   sortTasksForDisplay,
   toggleTaskCompletionLogic,
 } from './taskLogLogic';
-import { analyzeBrainDumpWithGemini } from '../services/gemini';
+import {
+  analyzeBrainDumpWithGemini,
+  classifyStudyItemWithGemini,
+  evaluateChapterCoverageWithGemini,
+  explainDoubtWithGemini,
+} from '../services/gemini';
+import {
+  deleteDoubtImageLocal,
+  loadAllDoubtImagesLocal,
+  saveDoubtImageLocal,
+} from '../services/doubtImageCache';
 import {
   FirebaseHandles,
   clearLocalFirebaseConfig,
+  deleteDoubtRemote,
   deleteLogRemote,
   deleteTaskRemote,
   initFirebaseIfConfigured,
@@ -38,10 +61,14 @@ import {
   signOutFirebase,
   signUpWithEmail,
   subscribeToAuth,
+  subscribeUserChapterProgress,
+  subscribeUserDoubts,
   subscribeUserLogs,
   subscribeUserPreferences,
   subscribeUserTasks,
   syncBatchToRemote,
+  upsertChapterProgressRemote,
+  upsertDoubtRemote,
   upsertLogRemote,
   upsertTaskRemote,
 } from '../services/firebase';
@@ -58,6 +85,9 @@ const STORAGE_KEYS = {
   tasks: 'strike.tasks.v1',
   logs: 'strike.logs.v1',
   prefs: 'strike.prefs.v1',
+  chapterProgress: 'strike.chapterProgress.v1',
+  doubts: 'strike.doubts.v1',
+  migratedDoubtsCategory: 'strike.migratedDoubtsCat.v1',
 } as const;
 
 export type SyncStatus = 'local-only' | 'signed-out' | 'syncing' | 'synced' | 'offline' | 'error';
@@ -68,26 +98,99 @@ export interface ToastMessage {
   tone: 'info' | 'success' | 'error';
 }
 
+export interface StudyTagInput {
+  subjectId?: StudySubjectId;
+  chapterId?: string;
+}
+
+export interface NewDoubtInput {
+  subjectId: StudySubjectId;
+  chapterId: string;
+  title: string;
+  questionText: string;
+  imageDataUrl?: string | null;
+  pyqYear?: number | null;
+  resolutionNote?: string;
+  source?: DoubtSource;
+}
+
 interface StrikeContextValue {
   tasks: TaskItem[];
   logs: LogEntry[];
   preferences: UserPreferences;
+  studySettings: StudySettings;
+  chapterProgress: Record<string, ChapterStudyState>;
+  doubts: DoubtItem[];
+  evaluatingChapterIds: string[];
   pendingSuggestions: PendingSuggestions | null;
   dismissSuggestions: () => void;
 
   // Task actions
-  addTask: (title: string, bucket: TaskBucket, category?: string) => TaskItem | null;
-  updateTask: (taskId: string, patch: Partial<Pick<TaskItem, 'title' | 'bucket' | 'category'>>) => void;
+  addTask: (
+    title: string,
+    bucket: TaskBucket,
+    category?: string,
+    studyTag?: StudyTagInput
+  ) => TaskItem | null;
+  updateTask: (
+    taskId: string,
+    patch: Partial<Pick<TaskItem, 'title' | 'bucket' | 'category' | 'subjectId' | 'chapterId'>>
+  ) => void;
   toggleTaskCompletion: (taskId: string) => void;
   moveTaskBucket: (taskId: string, bucket: TaskBucket) => void;
   deleteTask: (taskId: string) => void;
 
   // Daily log & Gemini actions
-  addManualLog: (title: string, category: string, dateKey?: string) => LogEntry | null;
-  updateLog: (logId: string, patch: Partial<Pick<LogEntry, 'title' | 'category' | 'dateKey'>>) => void;
+  addManualLog: (
+    title: string,
+    category: string,
+    dateKey?: string,
+    studyTag?: StudyTagInput
+  ) => LogEntry | null;
+  updateLog: (
+    logId: string,
+    patch: Partial<Pick<LogEntry, 'title' | 'category' | 'dateKey' | 'subjectId' | 'chapterId'>>
+  ) => void;
   deleteLog: (logId: string) => void;
-  processBrainDump: (rawText: string, dateKey?: string) => Promise<{ addedCount: number; suggestionsCount: number }>;
+  processBrainDump: (
+    rawText: string,
+    dateKey?: string
+  ) => Promise<{ addedCount: number; suggestionsCount: number; doubtsCount: number }>;
   isProcessingDump: boolean;
+
+  // Study Progress, PYQs & Doubts actions
+  updateStudySettings: (patch: Partial<StudySettings>) => void;
+  toggleChapterPyqYear: (chapterId: string, year: number) => void;
+  setChapterPyqYears: (chapterId: string, years: number[]) => void;
+  setManualChapterCoverage: (chapterId: string, percent: number) => void;
+  refreshChapterCoverageWithAi: (chapterId: string, options?: { silent?: boolean }) => Promise<void>;
+  assignItemChapter: (
+    targetType: 'task' | 'log',
+    id: string,
+    subjectId: StudySubjectId | undefined,
+    chapterId: string | undefined
+  ) => void;
+  addDoubt: (input: NewDoubtInput) => DoubtItem | null;
+  updateDoubt: (
+    doubtId: string,
+    patch: Partial<
+      Pick<
+        DoubtItem,
+        | 'subjectId'
+        | 'chapterId'
+        | 'title'
+        | 'questionText'
+        | 'imageDataUrl'
+        | 'pyqYear'
+        | 'status'
+        | 'resolutionNote'
+        | 'aiExplanation'
+      >
+    >
+  ) => void;
+  toggleDoubtStatus: (doubtId: string) => void;
+  deleteDoubt: (doubtId: string) => void;
+  explainDoubt: (doubtId: string) => Promise<string>;
 
   // Suggestion sheet actions
   acceptSuggestedTask: (suggestionId: string, bucket: TaskBucket) => void;
@@ -139,20 +242,81 @@ function loadLocalJson<T>(key: string, fallback: T): T {
   }
 }
 
+function normalizeStudySettings(raw?: Partial<StudySettings> | null): StudySettings {
+  const startRaw = Number(raw?.pyqYearStart);
+  const endRaw = Number(raw?.pyqYearEnd);
+  const s = Number.isFinite(startRaw) ? Math.floor(startRaw) : DEFAULT_STUDY_SETTINGS.pyqYearStart;
+  const e = Number.isFinite(endRaw) ? Math.floor(endRaw) : DEFAULT_STUDY_SETTINGS.pyqYearEnd;
+  const clampedStart = Math.max(1988, Math.min(2035, Math.min(s, e)));
+  const clampedEnd = Math.max(1988, Math.min(2035, Math.max(s, e)));
+  return {
+    showArchivedNcert: Boolean(raw?.showArchivedNcert),
+    pyqYearStart: clampedStart,
+    pyqYearEnd: clampedEnd,
+  };
+}
+
+function ensureDoubtsCategoryOnce(categories: CategoryConfig[]): CategoryConfig[] {
+  const alreadyMigrated = (() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.migratedDoubtsCategory) === '1';
+    } catch {
+      return true;
+    }
+  })();
+
+  if (alreadyMigrated) return categories;
+
+  try {
+    localStorage.setItem(STORAGE_KEYS.migratedDoubtsCategory, '1');
+  } catch {
+    // ignore storage errors
+  }
+
+  const hasDoubts = categories.some((c) => c.name.trim().toLowerCase() === 'doubts');
+  if (hasDoubts) return categories;
+
+  const learningIndex = categories.findIndex((c) => c.name.trim().toLowerCase() === 'learning');
+  const next = [...categories];
+  const doubtsConfig: CategoryConfig = { id: 'cat-doubts', name: 'Doubts', colorToken: 'coral' };
+  if (learningIndex >= 0) {
+    next.splice(learningIndex + 1, 0, doubtsConfig);
+  } else {
+    next.push(doubtsConfig);
+  }
+  return next;
+}
+
 function getInitialPreferences(): UserPreferences {
   const stored = loadLocalJson<Partial<UserPreferences>>(STORAGE_KEYS.prefs, {});
+  const baseCategories =
+    Array.isArray(stored.categories) && stored.categories.length > 0
+      ? stored.categories
+      : DEFAULT_CATEGORIES;
   return {
     geminiApiKey: typeof stored.geminiApiKey === 'string' ? stored.geminiApiKey : '',
     geminiModel:
       typeof stored.geminiModel === 'string' && stored.geminiModel.trim()
         ? stored.geminiModel
         : DEFAULT_GEMINI_MODEL,
-    categories:
-      Array.isArray(stored.categories) && stored.categories.length > 0
-        ? stored.categories
-        : DEFAULT_CATEGORIES,
+    categories: ensureDoubtsCategoryOnce(baseCategories),
+    studySettings: normalizeStudySettings(stored.studySettings),
     updatedAt: typeof stored.updatedAt === 'number' ? stored.updatedAt : 0,
   };
+}
+
+function sortDoubtsForDisplay(doubts: DoubtItem[]): DoubtItem[] {
+  return [...doubts].sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
+    return b.createdAt - a.createdAt;
+  });
+}
+
+function stripImagesForLocalStorage(doubts: DoubtItem[]): DoubtItem[] {
+  return doubts.map((d) => ({
+    ...d,
+    imageDataUrl: d.imageDataUrl ? null : d.imageDataUrl,
+  }));
 }
 
 export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -163,6 +327,13 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     sortLogsForDisplay(loadLocalJson<LogEntry[]>(STORAGE_KEYS.logs, []))
   );
   const [preferences, setPreferences] = useState<UserPreferences>(getInitialPreferences);
+  const [chapterProgress, setChapterProgress] = useState<Record<string, ChapterStudyState>>(() =>
+    loadLocalJson<Record<string, ChapterStudyState>>(STORAGE_KEYS.chapterProgress, {})
+  );
+  const [doubts, setDoubts] = useState<DoubtItem[]>(() =>
+    sortDoubtsForDisplay(loadLocalJson<DoubtItem[]>(STORAGE_KEYS.doubts, []))
+  );
+  const [evaluatingChapterIds, setEvaluatingChapterIds] = useState<string[]>([]);
   const [pendingSuggestions, setPendingSuggestions] = useState<PendingSuggestions | null>(null);
   const [isProcessingDump, setIsProcessingDump] = useState(false);
 
@@ -176,10 +347,41 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
+  const evalTimersRef = useRef<Map<string, number>>(new Map());
   const tasksRef = useRef(tasks);
   const logsRef = useRef(logs);
   const prefsRef = useRef(preferences);
+  const chapterProgressRef = useRef(chapterProgress);
+  const doubtsRef = useRef(doubts);
   const hydratedUidRef = useRef<string | null>(null);
+
+  const studySettings = useMemo(
+    () => normalizeStudySettings(preferences.studySettings),
+    [preferences.studySettings]
+  );
+
+  // Hydrate cached doubt diagram images from IndexedDB on initial mount
+  useEffect(() => {
+    let cancelled = false;
+    loadAllDoubtImagesLocal().then((imageMap) => {
+      if (cancelled || Object.keys(imageMap).length === 0) return;
+      setDoubts((prev) =>
+        prev.map((d) => (!d.imageDataUrl && imageMap[d.id] ? { ...d, imageDataUrl: imageMap[d.id] } : d))
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Cleanup pending debounce timers on unmount
+  useEffect(() => {
+    const timers = evalTimersRef.current;
+    return () => {
+      timers.forEach((timerId) => window.clearTimeout(timerId));
+      timers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -207,6 +409,24 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Ignore storage quota errors
     }
   }, [preferences]);
+
+  useEffect(() => {
+    chapterProgressRef.current = chapterProgress;
+    try {
+      localStorage.setItem(STORAGE_KEYS.chapterProgress, JSON.stringify(chapterProgress));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [chapterProgress]);
+
+  useEffect(() => {
+    doubtsRef.current = doubts;
+    try {
+      localStorage.setItem(STORAGE_KEYS.doubts, JSON.stringify(stripImagesForLocalStorage(doubts)));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [doubts]);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     if (toastTimerRef.current) {
@@ -294,6 +514,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const uid = user.uid;
     let initialTasksMerged = false;
     let initialLogsMerged = false;
+    let initialProgressMerged = false;
+    let initialDoubtsMerged = false;
 
     const handleErr = (err: Error) => {
       setSyncError(err.message);
@@ -344,22 +566,77 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       handleErr
     );
 
+    const unsubProgress = subscribeUserChapterProgress(
+      fbHandles.db,
+      uid,
+      (remoteProgress) => {
+        if (!initialProgressMerged && hydratedUidRef.current !== uid) {
+          initialProgressMerged = true;
+          const localOnly = Object.values(chapterProgressRef.current).filter(
+            (p) => !remoteProgress[p.chapterId]
+          );
+          if (localOnly.length > 0) {
+            void syncBatchToRemote(fbHandles.db, uid, { upsertChapterProgress: localOnly }).catch(
+              handleErr
+            );
+            const merged = { ...remoteProgress };
+            for (const item of localOnly) merged[item.chapterId] = item;
+            setChapterProgress(merged);
+          } else {
+            setChapterProgress(remoteProgress);
+          }
+        } else {
+          setChapterProgress(remoteProgress);
+        }
+      },
+      handleErr
+    );
+
+    const unsubDoubts = subscribeUserDoubts(
+      fbHandles.db,
+      uid,
+      (remoteDoubts) => {
+        // Persist any synced images to IndexedDB cache for offline access
+        for (const d of remoteDoubts) {
+          if (d.imageDataUrl) {
+            void saveDoubtImageLocal(d.id, d.imageDataUrl);
+          }
+        }
+
+        if (!initialDoubtsMerged && hydratedUidRef.current !== uid) {
+          initialDoubtsMerged = true;
+          const remoteIds = new Set(remoteDoubts.map((d) => d.id));
+          const localOnly = doubtsRef.current.filter((d) => !remoteIds.has(d.id));
+          if (localOnly.length > 0) {
+            void syncBatchToRemote(fbHandles.db, uid, { upsertDoubts: localOnly }).catch(handleErr);
+            setDoubts(sortDoubtsForDisplay([...remoteDoubts, ...localOnly]));
+          } else {
+            setDoubts(sortDoubtsForDisplay(remoteDoubts));
+          }
+        } else {
+          setDoubts(sortDoubtsForDisplay(remoteDoubts));
+        }
+      },
+      handleErr
+    );
+
     const unsubPrefs = subscribeUserPreferences(
       fbHandles.db,
       uid,
       (remotePrefs) => {
         if (remotePrefs) {
+          const baseCats =
+            Array.isArray(remotePrefs.categories) && remotePrefs.categories.length > 0
+              ? remotePrefs.categories
+              : DEFAULT_CATEGORIES;
           setPreferences({
             geminiApiKey: remotePrefs.geminiApiKey ?? '',
             geminiModel: remotePrefs.geminiModel || DEFAULT_GEMINI_MODEL,
-            categories:
-              Array.isArray(remotePrefs.categories) && remotePrefs.categories.length > 0
-                ? remotePrefs.categories
-                : DEFAULT_CATEGORIES,
+            categories: baseCats,
+            studySettings: normalizeStudySettings(remotePrefs.studySettings),
             updatedAt: remotePrefs.updatedAt || Date.now(),
           });
         } else if (prefsRef.current.geminiApiKey || prefsRef.current.updatedAt > 0) {
-          // Seed cloud preferences from local settings on first sign-in
           void savePreferencesRemote(fbHandles.db, uid, prefsRef.current).catch(handleErr);
         }
         hydratedUidRef.current = uid;
@@ -370,6 +647,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return () => {
       unsubTasks();
       unsubLogs();
+      unsubProgress();
+      unsubDoubts();
       unsubPrefs();
     };
   }, [fbHandles, user]);
@@ -386,13 +665,201 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [fbHandles, user]
   );
 
+  // --- AI Holistic Chapter Coverage Evaluation ---
+  const refreshChapterCoverageWithAi = useCallback(
+    async (chapterId: string, options?: { silent?: boolean }) => {
+      const chapter = getChapterById(chapterId);
+      if (!chapter) return;
+
+      const apiKey = prefsRef.current.geminiApiKey.trim();
+      if (!apiKey) {
+        if (!options?.silent) {
+          showToast('Add your Gemini API key in Settings to calculate AI coverage %', 'error');
+        }
+        return;
+      }
+
+      const chapterLogs = logsRef.current
+        .filter((l) => l.chapterId === chapterId && isLearningCategoryName(l.category))
+        .map((l) => ({ dateKey: l.dateKey, title: l.title }));
+      const existingProgress = chapterProgressRef.current[chapterId];
+      const completedPyqYears = existingProgress?.completedPyqYears ?? [];
+      const currentSettings = normalizeStudySettings(prefsRef.current.studySettings);
+      const totalPyqYears = getPyqYearsRange(
+        currentSettings.pyqYearStart,
+        currentSettings.pyqYearEnd
+      ).length;
+
+      // Fast-path: no logs and no PYQ years -> 0% without burning an API call
+      if (chapterLogs.length === 0 && completedPyqYears.length === 0) {
+        const zeroState: ChapterStudyState = {
+          chapterId: chapter.id,
+          subjectId: chapter.subjectId,
+          coveragePercent: 0,
+          coverageSource: 'ai',
+          aiSummary: 'No completed study logs or PYQs recorded yet.',
+          lastEvaluatedAt: Date.now(),
+          completedPyqYears: [],
+          updatedAt: Date.now(),
+        };
+        setChapterProgress((prev) => ({ ...prev, [chapter.id]: zeroState }));
+        runRemote((db, uid) => upsertChapterProgressRemote(db, uid, zeroState));
+        return;
+      }
+
+      setEvaluatingChapterIds((prev) => (prev.includes(chapterId) ? prev : [...prev, chapterId]));
+      try {
+        const result = await evaluateChapterCoverageWithGemini({
+          apiKey,
+          model: prefsRef.current.geminiModel,
+          chapter,
+          completedLogs: chapterLogs,
+          completedPyqYears,
+          totalPyqYears,
+          previousPercent: existingProgress?.coveragePercent ?? 0,
+        });
+
+        const now = Date.now();
+        const latestExisting = chapterProgressRef.current[chapterId];
+        const nextState: ChapterStudyState = {
+          chapterId: chapter.id,
+          subjectId: chapter.subjectId,
+          coveragePercent: result.coveragePercent,
+          coverageSource: 'ai',
+          aiSummary: result.aiSummary,
+          lastEvaluatedAt: now,
+          completedPyqYears: latestExisting?.completedPyqYears ?? completedPyqYears,
+          updatedAt: now,
+        };
+
+        setChapterProgress((prev) => ({ ...prev, [chapter.id]: nextState }));
+        runRemote((db, uid) => upsertChapterProgressRemote(db, uid, nextState));
+        if (!options?.silent) {
+          showToast(`${chapter.title}: ${result.coveragePercent}% covered`, 'success');
+        }
+      } catch (err) {
+        if (!options?.silent) {
+          showToast(
+            err instanceof Error ? err.message : 'Could not update chapter coverage %',
+            'error'
+          );
+        }
+      } finally {
+        setEvaluatingChapterIds((prev) => prev.filter((id) => id !== chapterId));
+      }
+    },
+    [runRemote, showToast]
+  );
+
+  const scheduleChapterEvaluation = useCallback(
+    (chapterId: string | undefined, delayMs: number) => {
+      if (!chapterId || !prefsRef.current.geminiApiKey.trim()) return;
+      const existingTimer = evalTimersRef.current.get(chapterId);
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+      }
+      const timerId = window.setTimeout(() => {
+        evalTimersRef.current.delete(chapterId);
+        void refreshChapterCoverageWithAi(chapterId, { silent: true });
+      }, delayMs);
+      evalTimersRef.current.set(chapterId, timerId);
+    },
+    [refreshChapterCoverageWithAi]
+  );
+
+  const autoTagLogAndEvaluate = useCallback(
+    async (logEntry: LogEntry, linkedTaskId?: string | null) => {
+      const apiKey = prefsRef.current.geminiApiKey.trim();
+      if (!apiKey || !isLearningCategoryName(logEntry.category)) return;
+      if (logEntry.chapterId) {
+        scheduleChapterEvaluation(logEntry.chapterId, 300);
+        return;
+      }
+
+      try {
+        const currentSettings = normalizeStudySettings(prefsRef.current.studySettings);
+        const result = await classifyStudyItemWithGemini({
+          apiKey,
+          model: prefsRef.current.geminiModel,
+          text: logEntry.title,
+          includeArchivedNcert: currentSettings.showArchivedNcert,
+        });
+
+        if (!result.chapterId || !result.subjectId) return;
+
+        const now = Date.now();
+        let updatedLog: LogEntry | null = null;
+        setLogs((prev) =>
+          sortLogsForDisplay(
+            prev.map((l) => {
+              if (l.id === logEntry.id && !l.chapterId) {
+                updatedLog = {
+                  ...l,
+                  subjectId: result.subjectId!,
+                  chapterId: result.chapterId!,
+                  updatedAt: now,
+                };
+                return updatedLog;
+              }
+              return l;
+            })
+          )
+        );
+
+        let updatedTask: TaskItem | null = null;
+        if (linkedTaskId) {
+          setTasks((prev) =>
+            sortTasksForDisplay(
+              prev.map((t) => {
+                if (t.id === linkedTaskId && !t.chapterId) {
+                  updatedTask = {
+                    ...t,
+                    subjectId: result.subjectId!,
+                    chapterId: result.chapterId!,
+                    updatedAt: now,
+                  };
+                  return updatedTask;
+                }
+                return t;
+              })
+            )
+          );
+        }
+
+        if (updatedLog || updatedTask) {
+          runRemote((db, uid) =>
+            syncBatchToRemote(db, uid, {
+              upsertLogs: updatedLog ? [updatedLog] : undefined,
+              upsertTasks: updatedTask ? [updatedTask] : undefined,
+            })
+          );
+        }
+
+        scheduleChapterEvaluation(result.chapterId, 250);
+      } catch {
+        // Silent fallback: user can still tag chapter manually in Study -> Needs Chapter Tag
+      }
+    },
+    [runRemote, scheduleChapterEvaluation]
+  );
+
   // --- Task Actions ---
   const addTask = useCallback(
-    (title: string, bucket: TaskBucket, category?: string): TaskItem | null => {
+    (
+      title: string,
+      bucket: TaskBucket,
+      category?: string,
+      studyTag?: StudyTagInput
+    ): TaskItem | null => {
       const trimmed = title.trim();
       if (!trimmed) return null;
 
-      const task = createTaskRecord(trimmed, bucket, tasksRef.current, { category });
+      const resolvedChap = getChapterById(studyTag?.chapterId);
+      const task = createTaskRecord(trimmed, bucket, tasksRef.current, {
+        category,
+        subjectId: resolvedChap?.subjectId ?? studyTag?.subjectId,
+        chapterId: resolvedChap?.id,
+      });
       setTasks((prev) => sortTasksForDisplay([task, ...prev]));
       runRemote((db, uid) => upsertTaskRemote(db, uid, task));
       return task;
@@ -401,7 +868,10 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
 
   const updateTask = useCallback(
-    (taskId: string, patch: Partial<Pick<TaskItem, 'title' | 'bucket' | 'category'>>) => {
+    (
+      taskId: string,
+      patch: Partial<Pick<TaskItem, 'title' | 'bucket' | 'category' | 'subjectId' | 'chapterId'>>
+    ) => {
       const existing = tasksRef.current.find((t) => t.id === taskId);
       if (!existing) return;
 
@@ -440,9 +910,14 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       if (result.createdLog) {
         showToast('Checked off & added to Today’s log', 'success');
+        if (isLearningCategoryName(result.createdLog.category)) {
+          void autoTagLogAndEvaluate(result.createdLog, result.updatedTask.id);
+        }
+      } else if (result.updatedTask.chapterId && isLearningCategoryName(result.updatedTask.category)) {
+        scheduleChapterEvaluation(result.updatedTask.chapterId, 500);
       }
     },
-    [runRemote, showToast]
+    [autoTagLogAndEvaluate, runRemote, scheduleChapterEvaluation, showToast]
   );
 
   const moveTaskBucket = useCallback(
@@ -465,16 +940,24 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // --- Log Actions ---
   const addManualLog = useCallback(
-    (title: string, category: string, dateKey: string = toDateKey()): LogEntry | null => {
+    (
+      title: string,
+      category: string,
+      dateKey: string = toDateKey(),
+      studyTag?: StudyTagInput
+    ): LogEntry | null => {
       const trimmed = title.trim();
       if (!trimmed) return null;
 
+      const resolvedChap = getChapterById(studyTag?.chapterId);
       const now = Date.now();
       const entry: LogEntry = {
         id: createId('log'),
         dateKey,
         title: trimmed,
         category: category || prefsRef.current.categories[0]?.name || 'Personal',
+        subjectId: resolvedChap?.subjectId ?? studyTag?.subjectId,
+        chapterId: resolvedChap?.id,
         source: 'manual',
         linkedTaskId: null,
         createdAt: now,
@@ -483,13 +966,21 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       setLogs((prev) => sortLogsForDisplay([entry, ...prev]));
       runRemote((db, uid) => upsertLogRemote(db, uid, entry));
+
+      if (isLearningCategoryName(entry.category)) {
+        void autoTagLogAndEvaluate(entry, null);
+      }
+
       return entry;
     },
-    [runRemote]
+    [autoTagLogAndEvaluate, runRemote]
   );
 
   const updateLog = useCallback(
-    (logId: string, patch: Partial<Pick<LogEntry, 'title' | 'category' | 'dateKey'>>) => {
+    (
+      logId: string,
+      patch: Partial<Pick<LogEntry, 'title' | 'category' | 'dateKey' | 'subjectId' | 'chapterId'>>
+    ) => {
       const existing = logsRef.current.find((l) => l.id === logId);
       if (!existing) return;
 
@@ -502,16 +993,271 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       setLogs((prev) => sortLogsForDisplay(prev.map((l) => (l.id === logId ? updated : l))));
       runRemote((db, uid) => upsertLogRemote(db, uid, updated));
+
+      if (existing.chapterId && existing.chapterId !== updated.chapterId) {
+        scheduleChapterEvaluation(existing.chapterId, 500);
+      }
+      if (updated.chapterId && isLearningCategoryName(updated.category)) {
+        scheduleChapterEvaluation(updated.chapterId, 500);
+      }
     },
-    [runRemote]
+    [runRemote, scheduleChapterEvaluation]
   );
 
   const deleteLog = useCallback(
     (logId: string) => {
+      const existing = logsRef.current.find((l) => l.id === logId);
       setLogs((prev) => prev.filter((l) => l.id !== logId));
       runRemote((db, uid) => deleteLogRemote(db, uid, logId));
+      if (existing?.chapterId && isLearningCategoryName(existing.category)) {
+        scheduleChapterEvaluation(existing.chapterId, 500);
+      }
+    },
+    [runRemote, scheduleChapterEvaluation]
+  );
+
+  // --- Study Progress, PYQs & Doubts Actions ---
+  const commitPreferences = useCallback(
+    (next: UserPreferences) => {
+      setPreferences(next);
+      runRemote((db, uid) => savePreferencesRemote(db, uid, next));
     },
     [runRemote]
+  );
+
+  const updateStudySettings = useCallback(
+    (patch: Partial<StudySettings>) => {
+      const current = normalizeStudySettings(prefsRef.current.studySettings);
+      const nextStudy = normalizeStudySettings({ ...current, ...patch });
+      commitPreferences({
+        ...prefsRef.current,
+        studySettings: nextStudy,
+        updatedAt: Date.now(),
+      });
+    },
+    [commitPreferences]
+  );
+
+  const toggleChapterPyqYear = useCallback(
+    (chapterId: string, year: number) => {
+      const chapter = getChapterById(chapterId);
+      if (!chapter) return;
+      const existing = chapterProgressRef.current[chapterId];
+      const currentYears = existing?.completedPyqYears ?? [];
+      const hasYear = currentYears.includes(year);
+      const nextYears = hasYear
+        ? currentYears.filter((y) => y !== year)
+        : [...currentYears, year].sort((a, b) => b - a);
+
+      const nextState: ChapterStudyState = {
+        chapterId: chapter.id,
+        subjectId: chapter.subjectId,
+        coveragePercent: existing?.coveragePercent ?? 0,
+        coverageSource: existing?.coverageSource ?? 'ai',
+        aiSummary: existing?.aiSummary,
+        lastEvaluatedAt: existing?.lastEvaluatedAt,
+        completedPyqYears: nextYears,
+        updatedAt: Date.now(),
+      };
+
+      setChapterProgress((prev) => ({ ...prev, [chapter.id]: nextState }));
+      runRemote((db, uid) => upsertChapterProgressRemote(db, uid, nextState));
+      scheduleChapterEvaluation(chapter.id, 2500);
+    },
+    [runRemote, scheduleChapterEvaluation]
+  );
+
+  const setChapterPyqYears = useCallback(
+    (chapterId: string, years: number[]) => {
+      const chapter = getChapterById(chapterId);
+      if (!chapter) return;
+      const existing = chapterProgressRef.current[chapterId];
+      const cleanYears = Array.from(new Set(years)).sort((a, b) => b - a);
+      const nextState: ChapterStudyState = {
+        chapterId: chapter.id,
+        subjectId: chapter.subjectId,
+        coveragePercent: existing?.coveragePercent ?? 0,
+        coverageSource: existing?.coverageSource ?? 'ai',
+        aiSummary: existing?.aiSummary,
+        lastEvaluatedAt: existing?.lastEvaluatedAt,
+        completedPyqYears: cleanYears,
+        updatedAt: Date.now(),
+      };
+      setChapterProgress((prev) => ({ ...prev, [chapter.id]: nextState }));
+      runRemote((db, uid) => upsertChapterProgressRemote(db, uid, nextState));
+      scheduleChapterEvaluation(chapter.id, 2500);
+    },
+    [runRemote, scheduleChapterEvaluation]
+  );
+
+  const setManualChapterCoverage = useCallback(
+    (chapterId: string, percent: number) => {
+      const chapter = getChapterById(chapterId);
+      if (!chapter) return;
+      const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+      const existing = chapterProgressRef.current[chapterId];
+      const nextState: ChapterStudyState = {
+        chapterId: chapter.id,
+        subjectId: chapter.subjectId,
+        coveragePercent: clamped,
+        coverageSource: 'manual',
+        aiSummary: existing?.aiSummary,
+        lastEvaluatedAt: existing?.lastEvaluatedAt,
+        completedPyqYears: existing?.completedPyqYears ?? [],
+        updatedAt: Date.now(),
+      };
+      setChapterProgress((prev) => ({ ...prev, [chapter.id]: nextState }));
+      runRemote((db, uid) => upsertChapterProgressRemote(db, uid, nextState));
+    },
+    [runRemote]
+  );
+
+  const assignItemChapter = useCallback(
+    (
+      targetType: 'task' | 'log',
+      id: string,
+      subjectId: StudySubjectId | undefined,
+      chapterId: string | undefined
+    ) => {
+      if (targetType === 'task') {
+        updateTask(id, { subjectId, chapterId });
+      } else {
+        updateLog(id, { subjectId, chapterId });
+      }
+    },
+    [updateLog, updateTask]
+  );
+
+  const addDoubt = useCallback(
+    (input: NewDoubtInput): DoubtItem | null => {
+      const title = input.title.trim();
+      const questionText = input.questionText.trim() || title;
+      if (!title && !questionText) return null;
+
+      const chap = getChapterById(input.chapterId);
+      const subjectId = chap?.subjectId ?? input.subjectId;
+      const chapterId = chap?.id ?? input.chapterId;
+      const now = Date.now();
+
+      const item: DoubtItem = {
+        id: createId('doubt'),
+        subjectId,
+        chapterId,
+        title: title || questionText.slice(0, 72),
+        questionText,
+        imageDataUrl: input.imageDataUrl ?? null,
+        pyqYear: input.pyqYear ?? null,
+        status: 'open',
+        resolutionNote: input.resolutionNote?.trim() ?? '',
+        source: input.source ?? 'manual',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      if (item.imageDataUrl) {
+        void saveDoubtImageLocal(item.id, item.imageDataUrl);
+      }
+
+      setDoubts((prev) => sortDoubtsForDisplay([item, ...prev]));
+      runRemote((db, uid) => upsertDoubtRemote(db, uid, item));
+      return item;
+    },
+    [runRemote]
+  );
+
+  const updateDoubt = useCallback(
+    (
+      doubtId: string,
+      patch: Partial<
+        Pick<
+          DoubtItem,
+          | 'subjectId'
+          | 'chapterId'
+          | 'title'
+          | 'questionText'
+          | 'imageDataUrl'
+          | 'pyqYear'
+          | 'status'
+          | 'resolutionNote'
+          | 'aiExplanation'
+        >
+      >
+    ) => {
+      const existing = doubtsRef.current.find((d) => d.id === doubtId);
+      if (!existing) return;
+
+      const chap = patch.chapterId ? getChapterById(patch.chapterId) : undefined;
+      const updated: DoubtItem = {
+        ...existing,
+        ...patch,
+        subjectId: chap?.subjectId ?? patch.subjectId ?? existing.subjectId,
+        chapterId: chap?.id ?? patch.chapterId ?? existing.chapterId,
+        title: patch.title !== undefined ? patch.title.trim() || existing.title : existing.title,
+        updatedAt: Date.now(),
+      };
+
+      if (patch.imageDataUrl !== undefined) {
+        if (patch.imageDataUrl) {
+          void saveDoubtImageLocal(doubtId, patch.imageDataUrl);
+        } else {
+          void deleteDoubtImageLocal(doubtId);
+        }
+      }
+
+      setDoubts((prev) => sortDoubtsForDisplay(prev.map((d) => (d.id === doubtId ? updated : d))));
+      runRemote((db, uid) => upsertDoubtRemote(db, uid, updated));
+    },
+    [runRemote]
+  );
+
+  const toggleDoubtStatus = useCallback(
+    (doubtId: string) => {
+      const existing = doubtsRef.current.find((d) => d.id === doubtId);
+      if (!existing) return;
+      const nextStatus = existing.status === 'open' ? 'resolved' : 'open';
+      updateDoubt(doubtId, { status: nextStatus });
+      showToast(nextStatus === 'resolved' ? 'Doubt marked resolved' : 'Doubt reopened', 'success');
+    },
+    [showToast, updateDoubt]
+  );
+
+  const deleteDoubt = useCallback(
+    (doubtId: string) => {
+      setDoubts((prev) => prev.filter((d) => d.id !== doubtId));
+      void deleteDoubtImageLocal(doubtId);
+      runRemote((db, uid) => deleteDoubtRemote(db, uid, doubtId));
+    },
+    [runRemote]
+  );
+
+  const explainDoubt = useCallback(
+    async (doubtId: string): Promise<string> => {
+      const target = doubtsRef.current.find((d) => d.id === doubtId);
+      if (!target) throw new Error('Doubt not found.');
+
+      const apiKey = prefsRef.current.geminiApiKey.trim();
+      if (!apiKey) {
+        throw new Error('Add your Gemini API key in Settings to get AI explanations.');
+      }
+
+      const chap = getChapterById(target.chapterId);
+      const subjectMeta = getSubjectMeta(target.subjectId);
+
+      const explanation = await explainDoubtWithGemini({
+        apiKey,
+        model: prefsRef.current.geminiModel,
+        subjectName: subjectMeta.name,
+        chapterTitle: chap?.title ?? target.chapterId,
+        classLevel: chap?.classLevel ?? 11,
+        title: target.title,
+        questionText: target.questionText,
+        imageDataUrl: target.imageDataUrl,
+      });
+
+      updateDoubt(doubtId, { aiExplanation: explanation });
+      return explanation;
+    },
+    [updateDoubt]
   );
 
   // --- Gemini Brain Dump ---
@@ -519,12 +1265,13 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     async (
       rawText: string,
       dateKey: string = toDateKey()
-    ): Promise<{ addedCount: number; suggestionsCount: number }> => {
+    ): Promise<{ addedCount: number; suggestionsCount: number; doubtsCount: number }> => {
       setIsProcessingDump(true);
       try {
         const openTasks = tasksRef.current
           .filter((t) => !t.completed)
           .map((t) => ({ id: t.id, title: t.title, bucket: t.bucket }));
+        const currentSettings = normalizeStudySettings(prefsRef.current.studySettings);
 
         const analysis = await analyzeBrainDumpWithGemini({
           apiKey: prefsRef.current.geminiApiKey,
@@ -533,6 +1280,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           categories: prefsRef.current.categories,
           openTasks,
           dateKey,
+          includeArchivedNcert: currentSettings.showArchivedNcert,
         });
 
         const now = Date.now();
@@ -542,6 +1290,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           dateKey,
           title: item.title,
           category: item.category,
+          ...(item.subjectId ? { subjectId: item.subjectId } : {}),
+          ...(item.chapterId ? { chapterId: item.chapterId } : {}),
           source: 'brain_dump',
           linkedTaskId: item.matchedOpenTaskId,
           rawDumpId,
@@ -549,10 +1299,46 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           updatedAt: now + idx,
         }));
 
+        const createdDoubts: DoubtItem[] = (analysis.doubts ?? []).map((d, idx) => ({
+          id: createId('doubt'),
+          subjectId: d.subjectId,
+          chapterId: d.chapterId,
+          title: d.title,
+          questionText: d.questionText,
+          imageDataUrl: null,
+          pyqYear: d.pyqYear,
+          status: 'open',
+          resolutionNote: '',
+          source: 'brain_dump',
+          createdAt: now + idx,
+          updatedAt: now + idx,
+        }));
+
         if (createdLogs.length > 0) {
           setLogs((prev) => sortLogsForDisplay([...createdLogs, ...prev]));
-          runRemote((db, uid) => syncBatchToRemote(db, uid, { upsertLogs: createdLogs }));
         }
+        if (createdDoubts.length > 0) {
+          setDoubts((prev) => sortDoubtsForDisplay([...createdDoubts, ...prev]));
+        }
+        if (createdLogs.length > 0 || createdDoubts.length > 0) {
+          runRemote((db, uid) =>
+            syncBatchToRemote(db, uid, {
+              upsertLogs: createdLogs.length > 0 ? createdLogs : undefined,
+              upsertDoubts: createdDoubts.length > 0 ? createdDoubts : undefined,
+            })
+          );
+        }
+
+        // Trigger background holistic chapter coverage refresh for any newly logged Learning chapters
+        const touchedChapterIds = new Set<string>();
+        for (const entry of createdLogs) {
+          if (entry.chapterId && isLearningCategoryName(entry.category)) {
+            touchedChapterIds.add(entry.chapterId);
+          }
+        }
+        touchedChapterIds.forEach((chapId) => {
+          scheduleChapterEvaluation(chapId, 400);
+        });
 
         const matchedTasks: MatchedOpenTaskItem[] = [];
         const seenMatchedTaskIds = new Set<string>();
@@ -580,6 +1366,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           title: u.title,
           suggestedBucket: u.suggestedBucket,
           category: u.category,
+          ...(u.subjectId ? { subjectId: u.subjectId } : {}),
+          ...(u.chapterId ? { chapterId: u.chapterId } : {}),
         }));
 
         const suggestionsCount = unfinishedTasks.length + matchedTasks.length;
@@ -591,9 +1379,19 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           });
         }
 
-        if (createdLogs.length > 0) {
+        if (createdLogs.length > 0 && createdDoubts.length > 0) {
+          showToast(
+            `Logged ${createdLogs.length} ${createdLogs.length === 1 ? 'activity' : 'activities'} & saved ${createdDoubts.length} ${createdDoubts.length === 1 ? 'doubt' : 'doubts'}`,
+            'success'
+          );
+        } else if (createdLogs.length > 0) {
           showToast(
             `Logged ${createdLogs.length} ${createdLogs.length === 1 ? 'activity' : 'activities'}`,
+            'success'
+          );
+        } else if (createdDoubts.length > 0) {
+          showToast(
+            `Saved ${createdDoubts.length} ${createdDoubts.length === 1 ? 'doubt' : 'doubts'} to Study`,
             'success'
           );
         } else if (suggestionsCount > 0) {
@@ -602,12 +1400,16 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           showToast('No distinct activities detected in that note', 'info');
         }
 
-        return { addedCount: createdLogs.length, suggestionsCount };
+        return {
+          addedCount: createdLogs.length,
+          suggestionsCount,
+          doubtsCount: createdDoubts.length,
+        };
       } finally {
         setIsProcessingDump(false);
       }
     },
-    [runRemote, showToast]
+    [runRemote, scheduleChapterEvaluation, showToast]
   );
 
   // --- Suggestion Sheet Handlers ---
@@ -621,7 +1423,10 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (!prev) return null;
         const found = prev.unfinishedTasks.find((s) => s.id === suggestionId);
         if (found) {
-          addTask(found.title, bucket, found.category);
+          addTask(found.title, bucket, found.category, {
+            subjectId: found.subjectId,
+            chapterId: found.chapterId,
+          });
         }
         const remaining = prev.unfinishedTasks.filter((s) => s.id !== suggestionId);
         if (remaining.length === 0 && prev.matchedTasks.length === 0) return null;
@@ -682,6 +1487,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     for (const s of pendingSuggestions.unfinishedTasks) {
       const task = createTaskRecord(s.title, s.suggestedBucket, workingTasks, {
         category: s.category,
+        subjectId: s.subjectId,
+        chapterId: s.chapterId,
       });
       workingTasks = [task, ...workingTasks];
       upsertTasks.push(task);
@@ -709,14 +1516,6 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [pendingSuggestions, runRemote, showToast]);
 
   // --- Preferences & Categories ---
-  const commitPreferences = useCallback(
-    (next: UserPreferences) => {
-      setPreferences(next);
-      runRemote((db, uid) => savePreferencesRemote(db, uid, next));
-    },
-    [runRemote]
-  );
-
   const updatePreferences = useCallback(
     (patch: Partial<Pick<UserPreferences, 'geminiApiKey' | 'geminiModel'>>) => {
       const next: UserPreferences = {
@@ -767,7 +1566,6 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatedAt: Date.now(),
       });
 
-      // Rename existing logs using this category so history stays consistent
       if (nextName !== existing.name) {
         const updatedLogs: LogEntry[] = [];
         setLogs((prev) =>
@@ -815,28 +1613,55 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       for (const l of logsRef.current) mergedLogsMap.set(l.id, l);
       for (const l of payload.logs) mergedLogsMap.set(l.id, l);
 
+      const mergedProgress: Record<string, ChapterStudyState> = {
+        ...chapterProgressRef.current,
+        ...(payload.chapterProgress ?? {}),
+      };
+
+      const mergedDoubtsMap = new Map<string, DoubtItem>();
+      for (const d of doubtsRef.current) mergedDoubtsMap.set(d.id, d);
+      for (const d of payload.doubts ?? []) {
+        mergedDoubtsMap.set(d.id, d);
+        if (d.imageDataUrl) {
+          void saveDoubtImageLocal(d.id, d.imageDataUrl);
+        }
+      }
+
       const nextTasks = sortTasksForDisplay(Array.from(mergedTasksMap.values()));
       const nextLogs = sortLogsForDisplay(Array.from(mergedLogsMap.values()));
+      const nextDoubts = sortDoubtsForDisplay(Array.from(mergedDoubtsMap.values()));
       const nextPrefs: UserPreferences = {
         ...prefsRef.current,
         categories: payload.categories.length > 0 ? payload.categories : prefsRef.current.categories,
+        studySettings: payload.studySettings
+          ? normalizeStudySettings(payload.studySettings)
+          : prefsRef.current.studySettings,
         updatedAt: Date.now(),
       };
 
       setTasks(nextTasks);
       setLogs(nextLogs);
+      setChapterProgress(mergedProgress);
+      setDoubts(nextDoubts);
       setPreferences(nextPrefs);
+
+      const importedProgressList = Object.values(payload.chapterProgress ?? {});
+      const importedDoubtsList = payload.doubts ?? [];
 
       runRemote((db, uid) =>
         syncBatchToRemote(db, uid, {
           upsertTasks: payload.tasks,
           upsertLogs: payload.logs,
+          upsertChapterProgress: importedProgressList.length > 0 ? importedProgressList : undefined,
+          upsertDoubts: importedDoubtsList.length > 0 ? importedDoubtsList : undefined,
           preferences: nextPrefs,
         })
       );
 
       showToast(
-        `Imported ${payload.tasks.length} tasks & ${payload.logs.length} log entries`,
+        `Imported ${payload.tasks.length} tasks, ${payload.logs.length} logs${
+          importedDoubtsList.length > 0 ? ` & ${importedDoubtsList.length} doubts` : ''
+        }`,
         'success'
       );
     },
@@ -918,6 +1743,10 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       tasks,
       logs,
       preferences,
+      studySettings,
+      chapterProgress,
+      doubts,
+      evaluatingChapterIds,
       pendingSuggestions,
       dismissSuggestions,
       addTask,
@@ -930,6 +1759,17 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       deleteLog,
       processBrainDump,
       isProcessingDump,
+      updateStudySettings,
+      toggleChapterPyqYear,
+      setChapterPyqYears,
+      setManualChapterCoverage,
+      refreshChapterCoverageWithAi,
+      assignItemChapter,
+      addDoubt,
+      updateDoubt,
+      toggleDoubtStatus,
+      deleteDoubt,
+      explainDoubt,
       acceptSuggestedTask,
       dismissSuggestedTask,
       acceptMatchedTask,
@@ -962,6 +1802,10 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       tasks,
       logs,
       preferences,
+      studySettings,
+      chapterProgress,
+      doubts,
+      evaluatingChapterIds,
       pendingSuggestions,
       dismissSuggestions,
       addTask,
@@ -974,6 +1818,17 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       deleteLog,
       processBrainDump,
       isProcessingDump,
+      updateStudySettings,
+      toggleChapterPyqYear,
+      setChapterPyqYears,
+      setManualChapterCoverage,
+      refreshChapterCoverageWithAi,
+      assignItemChapter,
+      addDoubt,
+      updateDoubt,
+      toggleDoubtStatus,
+      deleteDoubt,
+      explainDoubt,
       acceptSuggestedTask,
       dismissSuggestedTask,
       acceptMatchedTask,

@@ -10,10 +10,12 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
+import { getChapterById } from '../data/ncertCatalog';
 import { useStrike } from '../state/StrikeContext';
 import { LogEntry } from '../types/models';
 import { formatDateHeading, formatTimeShort, toDateKey } from '../utils/date';
 import { CategoryBadge } from '../components/CategoryBadge';
+import { ChapterTagChip } from '../components/ChapterPickerControl';
 import { LogEditSheet } from '../components/LogEditSheet';
 
 export const HistoryView: React.FC = () => {
@@ -51,12 +53,15 @@ export const HistoryView: React.FC = () => {
     const query = searchQuery.trim().toLowerCase();
     const filtered = logs.filter((entry) => {
       if (selectedCategory !== 'ALL' && entry.category !== selectedCategory) return false;
-      if (
-        query &&
-        !entry.title.toLowerCase().includes(query) &&
-        !entry.category.toLowerCase().includes(query)
-      ) {
-        return false;
+      if (query) {
+        const chapTitle = getChapterById(entry.chapterId)?.title.toLowerCase() ?? '';
+        if (
+          !entry.title.toLowerCase().includes(query) &&
+          !entry.category.toLowerCase().includes(query) &&
+          !chapTitle.includes(query)
+        ) {
+          return false;
+        }
       }
       return true;
     });
@@ -130,7 +135,7 @@ export const HistoryView: React.FC = () => {
             type="search"
             className="ios-input"
             style={{ paddingLeft: 38 }}
-            placeholder="Search past activities…"
+            placeholder="Search past activities or NCERT chapters…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -198,6 +203,9 @@ export const HistoryView: React.FC = () => {
                     <div className="log-entry-title">{entry.title}</div>
                     <div className="log-entry-meta">
                       <CategoryBadge name={entry.category} categories={preferences.categories} />
+                      {(entry.chapterId || entry.subjectId) && (
+                        <ChapterTagChip chapterId={entry.chapterId} subjectId={entry.subjectId} />
+                      )}
                       <span className="log-meta-note">{formatTimeShort(entry.createdAt)}</span>
                     </div>
                   </div>

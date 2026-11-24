@@ -24,7 +24,14 @@ import {
   setDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { FirebaseWebConfig, LogEntry, TaskItem, UserPreferences } from '../types/models';
+import {
+  ChapterStudyState,
+  DoubtItem,
+  FirebaseWebConfig,
+  LogEntry,
+  TaskItem,
+  UserPreferences,
+} from '../types/models';
 
 const LOCAL_FIREBASE_CONFIG_KEY = 'strike.firebaseConfig.v1';
 
@@ -257,6 +264,44 @@ export function subscribeUserPreferences(
   );
 }
 
+export function subscribeUserChapterProgress(
+  db: Firestore,
+  uid: string,
+  onData: (progress: Record<string, ChapterStudyState>) => void,
+  onError: (err: Error) => void
+): () => void {
+  return onSnapshot(
+    collection(db, 'users', uid, 'chapterProgress'),
+    (snap) => {
+      const map: Record<string, ChapterStudyState> = {};
+      for (const d of snap.docs) {
+        const item = d.data() as ChapterStudyState;
+        if (item && typeof item.chapterId === 'string') {
+          map[item.chapterId] = item;
+        }
+      }
+      onData(map);
+    },
+    (err) => onError(err)
+  );
+}
+
+export function subscribeUserDoubts(
+  db: Firestore,
+  uid: string,
+  onData: (doubts: DoubtItem[]) => void,
+  onError: (err: Error) => void
+): () => void {
+  return onSnapshot(
+    collection(db, 'users', uid, 'doubts'),
+    (snap) => {
+      const items = snap.docs.map((d) => d.data() as DoubtItem);
+      onData(items);
+    },
+    (err) => onError(err)
+  );
+}
+
 function stripUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined));
 }
@@ -277,6 +322,33 @@ export async function deleteLogRemote(db: Firestore, uid: string, logId: string)
   await deleteDoc(doc(db, 'users', uid, 'logs', logId));
 }
 
+export async function upsertChapterProgressRemote(
+  db: Firestore,
+  uid: string,
+  progress: ChapterStudyState
+): Promise<void> {
+  await setDoc(
+    doc(db, 'users', uid, 'chapterProgress', progress.chapterId),
+    stripUndefined({ ...progress })
+  );
+}
+
+export async function upsertDoubtRemote(
+  db: Firestore,
+  uid: string,
+  doubt: DoubtItem
+): Promise<void> {
+  await setDoc(doc(db, 'users', uid, 'doubts', doubt.id), stripUndefined({ ...doubt }));
+}
+
+export async function deleteDoubtRemote(
+  db: Firestore,
+  uid: string,
+  doubtId: string
+): Promise<void> {
+  await deleteDoc(doc(db, 'users', uid, 'doubts', doubtId));
+}
+
 export async function savePreferencesRemote(
   db: Firestore,
   uid: string,
@@ -293,6 +365,9 @@ export async function syncBatchToRemote(
     deleteTaskIds?: string[];
     upsertLogs?: LogEntry[];
     deleteLogIds?: string[];
+    upsertChapterProgress?: ChapterStudyState[];
+    upsertDoubts?: DoubtItem[];
+    deleteDoubtIds?: string[];
     preferences?: UserPreferences;
   }
 ): Promise<void> {
@@ -309,6 +384,18 @@ export async function syncBatchToRemote(
   }
   for (const logId of payload.deleteLogIds ?? []) {
     batch.delete(doc(db, 'users', uid, 'logs', logId));
+  }
+  for (const progress of payload.upsertChapterProgress ?? []) {
+    batch.set(
+      doc(db, 'users', uid, 'chapterProgress', progress.chapterId),
+      stripUndefined({ ...progress })
+    );
+  }
+  for (const doubt of payload.upsertDoubts ?? []) {
+    batch.set(doc(db, 'users', uid, 'doubts', doubt.id), stripUndefined({ ...doubt }));
+  }
+  for (const doubtId of payload.deleteDoubtIds ?? []) {
+    batch.delete(doc(db, 'users', uid, 'doubts', doubtId));
   }
   if (payload.preferences) {
     batch.set(

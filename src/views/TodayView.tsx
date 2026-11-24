@@ -7,10 +7,12 @@ import {
   Plus,
   Sparkles,
 } from 'lucide-react';
+import { StudySubjectId, isDoubtsCategoryName, isStudyTaggedCategory } from '../data/ncertCatalog';
 import { useStrike } from '../state/StrikeContext';
 import { LogEntry } from '../types/models';
 import { formatFullDateSubtitle, formatTimeShort, toDateKey } from '../utils/date';
 import { CategoryBadge } from '../components/CategoryBadge';
+import { ChapterPickerControl, ChapterTagChip } from '../components/ChapterPickerControl';
 import { LogEditSheet } from '../components/LogEditSheet';
 
 interface TodayViewProps {
@@ -21,10 +23,12 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
   const {
     logs,
     preferences,
+    studySettings,
     pendingSuggestions,
     isProcessingDump,
     processBrainDump,
     addManualLog,
+    addDoubt,
     showToast,
   } = useStrike();
 
@@ -35,10 +39,13 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
   const [manualCategory, setManualCategory] = useState(
     () => preferences.categories[0]?.name ?? 'Personal'
   );
+  const [manualSubjectId, setManualSubjectId] = useState<StudySubjectId | undefined>(undefined);
+  const [manualChapterId, setManualChapterId] = useState<string | undefined>(undefined);
   const [editingEntry, setEditingEntry] = useState<LogEntry | null>(null);
 
   const todayKey = toDateKey();
   const hasGeminiKey = Boolean(preferences.geminiApiKey.trim());
+  const isManualStudyCat = isStudyTaggedCategory(manualCategory);
 
   const todayLogs = useMemo(
     () => logs.filter((entry) => entry.dateKey === todayKey),
@@ -65,7 +72,26 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
     const resolvedCat = preferences.categories.some((c) => c.name === manualCategory)
       ? manualCategory
       : preferences.categories[0]?.name ?? 'Personal';
-    addManualLog(manualTitle, resolvedCat, todayKey);
+
+    const studyTag = isStudyTaggedCategory(resolvedCat)
+      ? { subjectId: manualSubjectId, chapterId: manualChapterId }
+      : undefined;
+
+    if (isDoubtsCategoryName(resolvedCat) && manualSubjectId && manualChapterId) {
+      addDoubt({
+        subjectId: manualSubjectId,
+        chapterId: manualChapterId,
+        title: manualTitle.trim(),
+        questionText: manualTitle.trim(),
+        source: 'manual',
+      });
+      addManualLog(manualTitle, resolvedCat, todayKey, studyTag);
+      setManualTitle('');
+      showToast('Doubt saved to Study & logged today', 'success');
+      return;
+    }
+
+    addManualLog(manualTitle, resolvedCat, todayKey, studyTag);
     setManualTitle('');
     showToast('Activity logged', 'success');
   };
@@ -130,7 +156,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
             <textarea
               id="brain-dump-textarea"
               className="ios-textarea"
-              placeholder="Dump what you got done today in plain text… e.g. Shipped the navbar fix, went for a 5k run, called mom, still need to pay electric bill tomorrow."
+              placeholder="Dump what you got done today in plain text… e.g. Revised Ray Optics NCERT & solved 2022 PYQs, stuck on lens maker sign convention doubt, went for a 5k run."
               value={dumpText}
               onChange={(e) => setDumpText(e.target.value)}
               disabled={isProcessingDump}
@@ -188,7 +214,11 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               id="manual-log-input"
               type="text"
               className="ios-input"
-              placeholder="What did you finish?"
+              placeholder={
+                isDoubtsCategoryName(manualCategory)
+                  ? 'Write the doubt or question to review…'
+                  : 'What did you finish?'
+              }
               value={manualTitle}
               onChange={(e) => setManualTitle(e.target.value)}
               autoComplete="off"
@@ -214,6 +244,19 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               })}
             </div>
 
+            {isManualStudyCat && (
+              <ChapterPickerControl
+                subjectId={manualSubjectId}
+                chapterId={manualChapterId}
+                includeArchived={studySettings.showArchivedNcert}
+                compact
+                onChange={({ subjectId: nextSub, chapterId: nextChap }) => {
+                  setManualSubjectId(nextSub);
+                  setManualChapterId(nextChap);
+                }}
+              />
+            )}
+
             <button
               id="manual-log-submit"
               type="submit"
@@ -221,7 +264,9 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               disabled={!manualTitle.trim()}
             >
               <Plus size={18} />
-              Add to Today’s Log
+              {isDoubtsCategoryName(manualCategory) && manualChapterId
+                ? 'Save Doubt & Log Today'
+                : 'Add to Today’s Log'}
             </button>
           </form>
         )}
@@ -266,6 +311,9 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
                   <div className="log-entry-title">{entry.title}</div>
                   <div className="log-entry-meta">
                     <CategoryBadge name={entry.category} categories={preferences.categories} />
+                    {(entry.chapterId || entry.subjectId) && (
+                      <ChapterTagChip chapterId={entry.chapterId} subjectId={entry.subjectId} />
+                    )}
                     <span className="log-meta-note">{formatTimeShort(entry.createdAt)}</span>
                     {entry.source === 'task_checkoff' && (
                       <span className="log-meta-note row-gap" style={{ gap: 4 }}>
