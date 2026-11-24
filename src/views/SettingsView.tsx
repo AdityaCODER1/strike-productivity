@@ -28,6 +28,7 @@ import {
   FIRESTORE_SECURITY_RULES_SNIPPET,
   parseFirebaseConfigInput,
 } from '../services/firebase';
+import { getGoogleOAuthRedirectUri } from '../services/googleAuth';
 import { testGeminiConnection } from '../services/gemini';
 import {
   parseImportJson,
@@ -61,6 +62,10 @@ export const SettingsView: React.FC = () => {
     importBackupPayload,
     firebaseConfigured,
     firebaseConfigSource,
+    googleClientId,
+    googleClientIdSource,
+    saveGoogleClientId,
+    clearGoogleClientId,
     user,
     syncStatus,
     syncError,
@@ -93,11 +98,15 @@ export const SettingsView: React.FC = () => {
   const [fbConfigInput, setFbConfigInput] = useState('');
   const [showFbSetup, setShowFbSetup] = useState(!firebaseConfigured);
   const [showRules, setShowRules] = useState(false);
+  const [showGoogleOAuthSetup, setShowGoogleOAuthSetup] = useState(false);
+  const [googleClientIdDraft, setGoogleClientIdDraft] = useState(googleClientId);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  const redirectUri = useMemo(() => getGoogleOAuthRedirectUri(), []);
 
   // Category editor
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -487,14 +496,113 @@ export const SettingsView: React.FC = () => {
               </button>
             </form>
 
-            <button
-              type="button"
-              className="btn btn--secondary btn--full"
-              disabled={authBusy}
-              onClick={handleGoogleAuth}
-            >
-              Continue with Google
-            </button>
+            <div className="stack-sm">
+              <button
+                type="button"
+                className="btn btn--secondary btn--full"
+                disabled={authBusy}
+                onClick={handleGoogleAuth}
+              >
+                Continue with Google
+              </button>
+
+              <div className="row-between" style={{ padding: '0 2px' }}>
+                <span className="field-hint">
+                  {googleClientId
+                    ? 'Same-tab Google OAuth active (Firefox & PWA safe)'
+                    : 'Using popup flow · Firefox/PWA needs Web Client ID'}
+                </span>
+                {googleClientIdSource !== 'env' && (
+                  <button
+                    type="button"
+                    className="log-meta-note"
+                    style={{ color: 'var(--accent-blue)' }}
+                    onClick={() => setShowGoogleOAuthSetup((v) => !v)}
+                  >
+                    {showGoogleOAuthSetup ? 'Hide' : googleClientId ? 'Edit ID' : 'Fix Mobile'}
+                  </button>
+                )}
+              </div>
+
+              {showGoogleOAuthSetup && googleClientIdSource !== 'env' && (
+                <div
+                  className="stack-sm"
+                  style={{
+                    background: 'var(--bg-elevated-2)',
+                    border: '1px solid var(--border-hairline)',
+                    borderRadius: 14,
+                    padding: 12,
+                  }}
+                >
+                  <span className="field-hint" style={{ color: 'var(--text-secondary)' }}>
+                    To avoid blank popup screens on Firefox Android or iOS PWAs, add your Redirect
+                    URI in Google Cloud Console (Credentials → Web client → Authorized redirect
+                    URIs), then paste the Web Client ID below:
+                  </span>
+
+                  <div className="row-gap">
+                    <code
+                      className="code-block"
+                      style={{ flex: 1, padding: '8px 10px', fontSize: 11 }}
+                    >
+                      {redirectUri}
+                    </code>
+                    <button
+                      type="button"
+                      className="btn btn--tinted btn--sm"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(redirectUri);
+                          showToast('Copied Redirect URI', 'success');
+                        } catch {
+                          showToast('Copy the URI shown above', 'info');
+                        }
+                      }}
+                    >
+                      <Copy size={13} />
+                    </button>
+                  </div>
+
+                  <div className="row-gap">
+                    <input
+                      id="settings-google-client-id"
+                      type="text"
+                      className="ios-input"
+                      style={{ background: 'var(--bg-elevated-1)', fontSize: 13 }}
+                      placeholder="1234567890-xxx.apps.googleusercontent.com"
+                      value={googleClientIdDraft}
+                      onChange={(e) => setGoogleClientIdDraft(e.target.value)}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn--primary btn--sm"
+                      disabled={!googleClientIdDraft.trim()}
+                      onClick={() => {
+                        saveGoogleClientId(googleClientIdDraft);
+                        setShowGoogleOAuthSetup(false);
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
+
+                  {googleClientId && (
+                    <button
+                      type="button"
+                      className="btn btn--danger-soft btn--sm"
+                      onClick={() => {
+                        clearGoogleClientId();
+                        setGoogleClientIdDraft('');
+                      }}
+                    >
+                      Remove Saved Client ID
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <p className="field-hint" style={{ margin: 0 }}>

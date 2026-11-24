@@ -33,6 +33,7 @@ import {
   reinitializeFirebaseWithConfig,
   savePreferencesRemote,
   signInWithEmail,
+  signInWithGoogleIdToken,
   signInWithGooglePopup,
   signOutFirebase,
   signUpWithEmail,
@@ -44,6 +45,13 @@ import {
   upsertLogRemote,
   upsertTaskRemote,
 } from '../services/firebase';
+import {
+  beginDirectGoogleSignIn,
+  clearLocalGoogleClientId,
+  consumeGoogleOAuthHashCallback,
+  resolveGoogleClientId,
+  saveLocalGoogleClientId,
+} from '../services/googleAuth';
 import { createId, toDateKey } from '../utils/date';
 
 const STORAGE_KEYS = {
@@ -100,6 +108,10 @@ interface StrikeContextValue {
   // Cloud Sync / Firebase Auth
   firebaseConfigured: boolean;
   firebaseConfigSource: 'env' | 'local' | null;
+  googleClientId: string;
+  googleClientIdSource: 'env' | 'local' | null;
+  saveGoogleClientId: (clientId: string) => void;
+  clearGoogleClientId: () => void;
   user: User | null;
   syncStatus: SyncStatus;
   syncError: string | null;
@@ -155,6 +167,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isProcessingDump, setIsProcessingDump] = useState(false);
 
   const [fbHandles, setFbHandles] = useState<FirebaseHandles | null>(() => initFirebaseIfConfigured());
+  const [googleClientIdState, setGoogleClientIdState] = useState(() => resolveGoogleClientId());
   const [user, setUser] = useState<User | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(() =>
     initFirebaseIfConfigured() ? 'signed-out' : 'local-only'
@@ -222,6 +235,36 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
   }, [fbHandles, user]);
 
+  // Complete direct same-tab Google OAuth callback (#id_token=...) if present
+  useEffect(() => {
+    if (!fbHandles) return;
+
+    const callbackResult = consumeGoogleOAuthHashCallback();
+    if (!callbackResult) return;
+
+    if (callbackResult.status === 'error') {
+      setSyncError(callbackResult.message);
+      showToast(callbackResult.message, 'error');
+      return;
+    }
+
+    setSyncStatus('syncing');
+    setSyncError(null);
+    signInWithGoogleIdToken(fbHandles.auth, callbackResult.idToken)
+      .then(() => {
+        showToast('Signed in with Google', 'success');
+      })
+      .catch((err: unknown) => {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Could not complete Google sign-in with Firebase.';
+        setSyncError(msg);
+        setSyncStatus('signed-out');
+        showToast('Google sign-in failed', 'error');
+      });
+  }, [fbHandles, showToast]);
+
   // Subscribe to Firebase Auth state
   useEffect(() => {
     if (!fbHandles) {
@@ -232,12 +275,12 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const unsub = subscribeToAuth(fbHandles.auth, (nextUser) => {
       setUser(nextUser);
-      setSyncError(null);
-      if (!nextUser) {
+      if (nextUser) {
+        setSyncError(null);
+        setSyncStatus('syncing');
+      } else {
         hydratedUidRef.current = null;
         setSyncStatus('signed-out');
-      } else {
-        setSyncStatus('syncing');
       }
     });
 
@@ -839,11 +882,30 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [fbHandles, showToast]
   );
 
+  const saveGoogleClientId = useCallback(
+    (clientId: string) => {
+      saveLocalGoogleClientId(clientId);
+      setGoogleClientIdState(resolveGoogleClientId());
+      showToast('Google Web Client ID saved — mobile sign-in ready', 'success');
+    },
+    [showToast]
+  );
+
+  const clearGoogleClientId = useCallback(() => {
+    clearLocalGoogleClientId();
+    setGoogleClientIdState(resolveGoogleClientId());
+    showToast('Cleared local Google Web Client ID', 'info');
+  }, [showToast]);
+
   const loginWithGoogle = useCallback(async () => {
     if (!fbHandles) throw new Error('Connect a Firebase project first.');
+    if (googleClientIdState.clientId) {
+      beginDirectGoogleSignIn(googleClientIdState.clientId);
+      return;
+    }
     await signInWithGooglePopup(fbHandles.auth);
     showToast('Signed in with Google', 'success');
-  }, [fbHandles, showToast]);
+  }, [fbHandles, googleClientIdState.clientId, showToast]);
 
   const logout = useCallback(async () => {
     if (!fbHandles) return;
@@ -880,6 +942,10 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       importBackupPayload,
       firebaseConfigured: Boolean(fbHandles),
       firebaseConfigSource: fbHandles?.configSource ?? null,
+      googleClientId: googleClientIdState.clientId,
+      googleClientIdSource: googleClientIdState.source,
+      saveGoogleClientId,
+      clearGoogleClientId,
       user,
       syncStatus,
       syncError,
@@ -919,6 +985,9 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       deleteCategory,
       importBackupPayload,
       fbHandles,
+      googleClientIdState,
+      saveGoogleClientId,
+      clearGoogleClientId,
       user,
       syncStatus,
       syncError,
