@@ -58,6 +58,16 @@ service cloud.firestore {
      - `VITE_FIREBASE_STORAGE_BUCKET`
      - `VITE_FIREBASE_MESSAGING_SENDER_ID`
      - `VITE_FIREBASE_APP_ID`
+     - `VITE_GOOGLE_CLIENT_ID` *(recommended for Google Sign-In on Firefox Mobile & installed PWAs)*
+
+### Mobile / Firefox Google Sign-In (Same-Tab OAuth)
+
+Mobile browsers like Firefox Android and installed Home Screen PWAs often block cross-origin `firebaseapp.com` popups. To enable bulletproof **same-tab Google Sign-In** on GitHub Pages:
+
+1. In [Firebase Console](https://console.firebase.google.com/) → **Authentication → Sign-in method → Google → Web SDK configuration**, copy your **Web client ID** (`...apps.googleusercontent.com`).
+2. In [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services → Credentials**, click your auto-created **Web client** and add your GitHub Pages URL under **Authorized redirect URIs**:
+   - `https://adityacoder1.github.io/strike-productivity/`
+3. Add `VITE_GOOGLE_CLIENT_ID` as a GitHub Actions Repository Variable (or paste it inside **Strike → Settings → Cloud Sync → Fix Mobile**).
 
 ---
 
