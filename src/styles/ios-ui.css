@@ -159,6 +159,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 0 6px;
 }
 
@@ -169,6 +170,53 @@ button {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--text-secondary);
+}
+
+.ios-group-date {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+}
+
+.group-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.group-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.12s var(--ease-spring);
+  white-space: nowrap;
+}
+
+.group-action-chip:hover {
+  background: rgba(255, 255, 255, 0.11);
+  color: var(--text-primary);
+}
+
+.group-action-chip:active {
+  transform: scale(0.95);
+}
+
+.group-action-chip--primary {
+  background: var(--accent-blue-soft);
+  color: var(--accent-blue);
+}
+
+.group-action-chip--primary:hover {
+  background: rgba(10, 132, 255, 0.24);
+  color: #54adff;
 }
 
 .ios-group-count {
@@ -416,7 +464,8 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* Circular Apple Reminders Checkbox */
@@ -492,7 +541,7 @@ button {
 .task-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
@@ -507,6 +556,13 @@ button {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-secondary);
   transition: background-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
+  white-space: nowrap;
+}
+
+.bucket-chip--compact {
+  gap: 3px;
+  padding: 4px 7px;
+  font-size: 11px;
 }
 
 .bucket-chip:hover {

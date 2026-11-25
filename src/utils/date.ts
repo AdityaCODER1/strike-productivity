@@ -38,12 +38,40 @@ export function formatDateHeading(dateKey: string, todayKey: string = toDateKey(
 }
 
 /**
+ * Shift a YYYY-MM-DD local date key by a number of days (DST-safe via local noon).
+ */
+export function addDaysToDateKey(dateKey: string, days: number): string {
+  const target = parseDateKey(dateKey);
+  target.setDate(target.getDate() + days);
+  return toDateKey(target);
+}
+
+/**
+ * Return tomorrow's local YYYY-MM-DD date key.
+ */
+export function getTomorrowDateKey(now: Date = new Date()): string {
+  return addDaysToDateKey(toDateKey(now), 1);
+}
+
+/**
  * Full header date subtitle like "Monday, Nov 23".
  */
 export function formatFullDateSubtitle(dateKey: string = toDateKey()): string {
   const target = parseDateKey(dateKey);
   return target.toLocaleDateString(undefined, {
     weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/**
+ * Compact weekday + date label like "Thu, Nov 26" for section headers.
+ */
+export function formatShortWeekdayDate(dateKey: string): string {
+  const target = parseDateKey(dateKey);
+  return target.toLocaleDateString(undefined, {
+    weekday: 'short',
     month: 'short',
     day: 'numeric',
   });

@@ -277,8 +277,9 @@ export function buildBrainDumpResponseSchema(
             },
             suggestedBucket: {
               type: 'STRING',
-              enum: ['today', 'later'],
-              description: 'Use "today" for urgent/tomorrow follow-ups, "later" for general backlog.',
+              enum: ['today', 'tomorrow', 'later'],
+              description:
+                'Use "today" for still-urgent today tasks, "tomorrow" for next-day follow-ups or deferred-until-tomorrow items, and "later" for general backlog.',
             },
             category: {
               type: 'STRING',
@@ -405,7 +406,7 @@ export function buildBrainDumpPrompt(
           '1. Split the text into distinct, concise completed activities (sentence case, no trailing period, clear action verb when natural).',
           `2. Assign EVERY item strictly one category from: ${categoryNames.join(', ')}.`,
           '3. If a completed activity clearly completes one of the OPEN_TASKS below, set matchedOpenTaskId to its exact id; otherwise set matchedOpenTaskId to null.',
-          '4. If the user mentions something unfinished, skipped, blocked, or to do tomorrow/next, extract it into unfinishedTasks (do NOT duplicate items already in OPEN_TASKS).',
+          '4. If the user mentions something unfinished, skipped, blocked, or to do tomorrow/next, extract it into unfinishedTasks (do NOT duplicate items already in OPEN_TASKS). Use suggestedBucket="tomorrow" when they plan to do it tomorrow/next day, "today" for remaining today tasks, and "later" for general backlog.',
           '5. For items categorized as "Learning", "Doubts", or "Mistakes" about Physics, Chemistry, or Biology, tag subjectId and exact chapterId from NCERT_CATALOG below. For ALL non-study categories (Work, Personal, Health, Home, Social, etc.), ALWAYS set subjectId=null and chapterId=null.',
           '6. Distinguish Doubts vs Mistakes: if the user is still confused/stuck on a question and needs an explanation later, put it in doubts. If the user got a question wrong, made a silly/sign/formula slip, misread an option, or fell for an NCERT trap in a mock/PYQ/practice, put it in mistakes with subjectId, chapterId, mistakeType, correctionNote, and optional sourceLabel (and do not duplicate it as a completed activity unless they also did separate study work).',
           '7. Do not invent activities, doubts, or mistakes the user did not mention.',
@@ -517,7 +518,12 @@ export function parseGeminiBrainDumpPayload(
           const studyLink = resolveStudyLink(category, item.subjectId, item.chapterId);
           return {
             title: item.title.trim(),
-            suggestedBucket: item.suggestedBucket === 'later' ? 'later' : 'today',
+            suggestedBucket:
+              item.suggestedBucket === 'tomorrow'
+                ? 'tomorrow'
+                : item.suggestedBucket === 'later'
+                ? 'later'
+                : 'today',
             category,
             ...studyLink,
           };

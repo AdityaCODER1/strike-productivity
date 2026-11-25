@@ -19,13 +19,27 @@ describe('exporter service', () => {
     },
     {
       id: 'task_2',
+      title: 'Prepare biology flashcards',
+      bucket: 'tomorrow',
+      scheduledForDateKey: '2026-11-24',
+      completed: false,
+      completedAt: null,
+      completedDateKey: null,
+      linkedLogEntryId: null,
+      category: 'Learning',
+      order: 0,
+      createdAt: 950,
+      updatedAt: 950,
+    },
+    {
+      id: 'task_3',
       title: 'Organize garage',
       bucket: 'later',
       completed: false,
       completedAt: null,
       completedDateKey: null,
       linkedLogEntryId: null,
-      order: 0,
+      order: 1,
       createdAt: 900,
       updatedAt: 900,
     },
@@ -48,6 +62,8 @@ describe('exporter service', () => {
     const md = serializeToMarkdown(sampleTasks, sampleLogs, new Date(2026, 10, 23, 12, 0, 0));
     expect(md).toContain('# Strike Export — 2026-11-23');
     expect(md).toContain('- [ ] Review pull request `Work`');
+    expect(md).toContain('### Tomorrow');
+    expect(md).toContain('- [ ] Prepare biology flashcards `Learning`');
     expect(md).toContain('- [ ] Organize garage');
     expect(md).toContain('### 2026-11-23');
     expect(md).toContain('- **[Health]** Ran 5k around the park');

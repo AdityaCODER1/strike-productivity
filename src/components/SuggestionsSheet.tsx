@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, CheckCheck, Clock, Sun, X } from 'lucide-react';
+import { Check, CheckCheck, Clock, Sun, Sunrise, X } from 'lucide-react';
 import { useStrike } from '../state/StrikeContext';
 import { CategoryBadge } from './CategoryBadge';
 
@@ -105,7 +105,17 @@ export const SuggestionsSheet: React.FC = () => {
                     onClick={() => acceptSuggestedTask(item.id, 'today')}
                   >
                     <Sun size={14} />
-                    Add to Today
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn--sm btn--pill ${
+                      item.suggestedBucket === 'tomorrow' ? 'btn--primary' : 'btn--secondary'
+                    }`}
+                    onClick={() => acceptSuggestedTask(item.id, 'tomorrow')}
+                  >
+                    <Sunrise size={14} />
+                    Tomorrow
                   </button>
                   <button
                     type="button"
@@ -115,7 +125,7 @@ export const SuggestionsSheet: React.FC = () => {
                     onClick={() => acceptSuggestedTask(item.id, 'later')}
                   >
                     <Clock size={14} />
-                    Add to Later
+                    Later
                   </button>
                   <button
                     type="button"

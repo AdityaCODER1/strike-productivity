@@ -1,6 +1,12 @@
 import { StudySubjectId } from '../data/ncertCatalog';
 
-export type TaskBucket = 'today' | 'later';
+export type TaskBucket = 'today' | 'tomorrow' | 'later';
+
+export function formatTaskBucketLabel(bucket: TaskBucket): string {
+  if (bucket === 'today') return 'Today';
+  if (bucket === 'tomorrow') return 'Tomorrow';
+  return 'Later';
+}
 
 export type CategoryColorToken =
   | 'blue'
@@ -60,6 +66,8 @@ export interface TaskItem {
   id: string;
   title: string;
   bucket: TaskBucket;
+  /** Local YYYY-MM-DD date when a 'tomorrow' task is scheduled to roll into 'today'. */
+  scheduledForDateKey?: string;
   completed: boolean;
   completedAt: number | null;
   completedDateKey: string | null;

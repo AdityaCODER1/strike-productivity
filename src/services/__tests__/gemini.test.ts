@@ -35,6 +35,11 @@ describe('gemini service', () => {
       'Learning',
       'Doubts',
     ]);
+    expect(schema.properties.unfinishedTasks.items.properties.suggestedBucket.enum).toEqual([
+      'today',
+      'tomorrow',
+      'later',
+    ]);
     expect(schema.properties.completedActivities.items.properties.subjectId.nullable).toBe(true);
     expect(schema.properties.completedActivities.items.properties.chapterId.nullable).toBe(true);
     expect(schema.properties.unfinishedTasks.items.properties.subjectId.nullable).toBe(true);
@@ -63,6 +68,7 @@ describe('gemini service', () => {
       ],
       unfinishedTasks: [
         { title: 'Pay water bill', suggestedBucket: 'today', category: 'Home' },
+        { title: 'Revise Electrochemistry notes', suggestedBucket: 'tomorrow', category: 'Learning' },
       ],
       doubts: [
         {
@@ -94,6 +100,7 @@ describe('gemini service', () => {
     ]);
     expect(parsed.unfinishedTasks).toEqual([
       { title: 'Pay water bill', suggestedBucket: 'today', category: 'Home' },
+      { title: 'Revise Electrochemistry notes', suggestedBucket: 'tomorrow', category: 'Learning' },
     ]);
     expect(parsed.doubts).toHaveLength(1);
     expect(parsed.doubts[0].chapterId).toBe('phy-12-ray-optics');

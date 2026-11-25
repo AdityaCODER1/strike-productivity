@@ -332,7 +332,9 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
                     onClick={() => toggleTaskCompletion(t.id)}
                   />
                   <span style={{ fontSize: 14.5, flex: 1 }}>{t.title}</span>
-                  <span className="log-meta-note">{t.bucket === 'today' ? 'Today' : 'Later'}</span>
+                  <span className="log-meta-note">
+                    {t.bucket === 'today' ? 'Today' : t.bucket === 'tomorrow' ? 'Tomorrow' : 'Later'}
+                  </span>
                 </div>
               ))}
             </div>

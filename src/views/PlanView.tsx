@@ -9,17 +9,38 @@ import {
   Clock,
   Plus,
   Sun,
+  Sunrise,
   Trash2,
 } from 'lucide-react';
 import { StudySubjectId } from '../data/ncertCatalog';
 import { useStrike } from '../state/StrikeContext';
-import { TaskBucket, TaskItem } from '../types/models';
-import { toDateKey } from '../utils/date';
+import { TaskBucket, TaskItem, formatTaskBucketLabel } from '../types/models';
+import { formatShortWeekdayDate } from '../utils/date';
 import { CategoryBadge } from '../components/CategoryBadge';
 import { ChapterPickerControl, ChapterTagChip } from '../components/ChapterPickerControl';
 
+const ROW_MOVE_TARGETS: Record<
+  TaskBucket,
+  Array<{ target: TaskBucket; shortLabel: string; direction: 'up' | 'down' }>
+> = {
+  today: [
+    { target: 'tomorrow', shortLabel: 'Tmrw', direction: 'down' },
+    { target: 'later', shortLabel: 'Later', direction: 'down' },
+  ],
+  tomorrow: [
+    { target: 'today', shortLabel: 'Today', direction: 'up' },
+    { target: 'later', shortLabel: 'Later', direction: 'down' },
+  ],
+  later: [
+    { target: 'today', shortLabel: 'Today', direction: 'up' },
+    { target: 'tomorrow', shortLabel: 'Tmrw', direction: 'up' },
+  ],
+};
+
 export const PlanView: React.FC = () => {
   const {
+    todayKey,
+    tomorrowKey,
     tasks,
     preferences,
     studySettings,
@@ -28,6 +49,8 @@ export const PlanView: React.FC = () => {
     updateTask,
     toggleTaskCompletion,
     moveTaskBucket,
+    promoteAllTomorrowToToday,
+    deferAllTodayToTomorrow,
     deleteTask,
   } = useStrike();
 
@@ -40,10 +63,11 @@ export const PlanView: React.FC = () => {
   const [editingTitle, setEditingTitle] = useState('');
   const [showCompletedToday, setShowCompletedToday] = useState(true);
 
-  const todayKey = toDateKey();
+  const tomorrowDateLabel = useMemo(() => formatShortWeekdayDate(tomorrowKey), [tomorrowKey]);
 
-  const { todayOpen, laterOpen, completedToday } = useMemo(() => {
+  const { todayOpen, tomorrowOpen, laterOpen, completedToday } = useMemo(() => {
     const tOpen: TaskItem[] = [];
+    const tmrwOpen: TaskItem[] = [];
     const lOpen: TaskItem[] = [];
     const doneToday: TaskItem[] = [];
 
@@ -54,13 +78,20 @@ export const PlanView: React.FC = () => {
         }
       } else if (task.bucket === 'today') {
         tOpen.push(task);
+      } else if (task.bucket === 'tomorrow') {
+        tmrwOpen.push(task);
       } else {
         lOpen.push(task);
       }
     }
 
     doneToday.sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
-    return { todayOpen: tOpen, laterOpen: lOpen, completedToday: doneToday };
+    return {
+      todayOpen: tOpen,
+      tomorrowOpen: tmrwOpen,
+      laterOpen: lOpen,
+      completedToday: doneToday,
+    };
   }, [tasks, todayKey]);
 
   const handleAdd = (e: React.FormEvent) => {
@@ -88,8 +119,19 @@ export const PlanView: React.FC = () => {
     setEditingTitle('');
   };
 
+  const composerPlaceholder = tagAsLearning
+    ? draftBucket === 'tomorrow'
+      ? 'Capture a Learning study task for tomorrow…'
+      : 'Capture a Learning study task…'
+    : draftBucket === 'today'
+    ? 'Capture a task for today…'
+    : draftBucket === 'tomorrow'
+    ? 'Capture a task for tomorrow…'
+    : 'Capture something for later…';
+
   const renderTaskRow = (task: TaskItem) => {
     const isEditing = editingTaskId === task.id;
+    const moveTargets = ROW_MOVE_TARGETS[task.bucket];
 
     return (
       <div key={task.id} className="ios-row">
@@ -141,26 +183,23 @@ export const PlanView: React.FC = () => {
         </div>
 
         <div className="task-actions">
-          {!task.completed && (
-            <button
-              type="button"
-              className="bucket-chip"
-              title={task.bucket === 'today' ? 'Move to Later' : 'Pin to Today'}
-              onClick={() => moveTaskBucket(task.id, task.bucket === 'today' ? 'later' : 'today')}
-            >
-              {task.bucket === 'today' ? (
-                <>
-                  <ArrowDownRight size={12} />
-                  Later
-                </>
-              ) : (
-                <>
-                  <ArrowUpRight size={12} />
-                  Today
-                </>
-              )}
-            </button>
-          )}
+          {!task.completed &&
+            moveTargets.map(({ target, shortLabel, direction }) => {
+              const targetLabel = formatTaskBucketLabel(target);
+              return (
+                <button
+                  key={target}
+                  type="button"
+                  className="bucket-chip bucket-chip--compact"
+                  title={`Move to ${targetLabel}`}
+                  aria-label={`Move "${task.title}" to ${targetLabel}`}
+                  onClick={() => moveTaskBucket(task.id, target)}
+                >
+                  {direction === 'up' ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+                  {shortLabel}
+                </button>
+              );
+            })}
 
           <button
             type="button"
@@ -198,6 +237,7 @@ export const PlanView: React.FC = () => {
           />
           <span>
             {todayOpen.length} Today
+            {tomorrowOpen.length > 0 ? ` · ${tomorrowOpen.length} Tmrw` : ''}
           </span>
         </div>
       </header>
@@ -209,13 +249,7 @@ export const PlanView: React.FC = () => {
             id="plan-task-input"
             type="text"
             className="ios-input"
-            placeholder={
-              tagAsLearning
-                ? 'Capture a Learning study task…'
-                : draftBucket === 'today'
-                ? 'Capture a task for today…'
-                : 'Capture something for later…'
-            }
+            placeholder={composerPlaceholder}
             value={draftTitle}
             onChange={(e) => setDraftTitle(e.target.value)}
             autoComplete="off"
@@ -232,7 +266,7 @@ export const PlanView: React.FC = () => {
         </div>
 
         <div className="task-composer-footer">
-          <div className="ios-segmented" role="tablist" aria-label="Target bucket">
+          <div className="ios-segmented ios-segmented--compact" role="tablist" aria-label="Target bucket">
             <button
               type="button"
               role="tab"
@@ -243,6 +277,17 @@ export const PlanView: React.FC = () => {
               onClick={() => setDraftBucket('today')}
             >
               Today
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={draftBucket === 'tomorrow'}
+              className={`ios-segmented-btn ${
+                draftBucket === 'tomorrow' ? 'ios-segmented-btn--active' : ''
+              }`}
+              onClick={() => setDraftBucket('tomorrow')}
+            >
+              Tomorrow
             </button>
             <button
               type="button"
@@ -288,7 +333,19 @@ export const PlanView: React.FC = () => {
             <Sun size={13} />
             Today
           </h2>
-          <span className="ios-group-count">{todayOpen.length}</span>
+          <div className="group-header-actions">
+            {todayOpen.length > 0 && (
+              <button
+                type="button"
+                className="group-action-chip"
+                onClick={deferAllTodayToTomorrow}
+              >
+                <ArrowDownRight size={12} />
+                Defer all to Tomorrow
+              </button>
+            )}
+            <span className="ios-group-count">{todayOpen.length}</span>
+          </div>
         </div>
 
         <div className="ios-list">
@@ -301,7 +358,43 @@ export const PlanView: React.FC = () => {
               </div>
               <p className="empty-state-title">Clear runway for today</p>
               <p className="empty-state-subtitle">
-                Add a focus item above or promote something from Later.
+                Add a focus item above or promote something from Tomorrow or Later.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Tomorrow Bucket */}
+      <section className="ios-group" aria-labelledby="tomorrow-bucket-heading">
+        <div className="ios-group-header">
+          <h2 id="tomorrow-bucket-heading" className="ios-group-title row-gap">
+            <Sunrise size={13} />
+            <span>Tomorrow</span>
+            <span className="ios-group-date">· {tomorrowDateLabel}</span>
+          </h2>
+          <div className="group-header-actions">
+            {tomorrowOpen.length > 0 && (
+              <button
+                type="button"
+                className="group-action-chip group-action-chip--primary"
+                onClick={promoteAllTomorrowToToday}
+              >
+                <ArrowUpRight size={12} />
+                Move all to Today
+              </button>
+            )}
+            <span className="ios-group-count">{tomorrowOpen.length}</span>
+          </div>
+        </div>
+
+        <div className="ios-list">
+          {tomorrowOpen.length > 0 ? (
+            tomorrowOpen.map(renderTaskRow)
+          ) : (
+            <div className="empty-state" style={{ padding: '20px 16px' }}>
+              <p className="empty-state-subtitle">
+                Prepare tomorrow’s to-do list tonight — items auto-move into Today at midnight.
               </p>
             </div>
           )}

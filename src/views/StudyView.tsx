@@ -187,7 +187,9 @@ export const StudyView: React.FC = () => {
             targetType: 'task',
             id: task.id,
             title: task.title,
-            meta: `Plan · ${task.bucket === 'today' ? 'Today' : 'Later'}`,
+            meta: `Plan · ${
+              task.bucket === 'today' ? 'Today' : task.bucket === 'tomorrow' ? 'Tomorrow' : 'Later'
+            }`,
           });
         }
       }

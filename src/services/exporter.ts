@@ -71,6 +71,7 @@ export function serializeToMarkdown(
   const dateLabel = toDateKey(now);
   const sortedTasks = sortTasksForDisplay(tasks);
   const openToday = sortedTasks.filter((t) => !t.completed && t.bucket === 'today');
+  const openTomorrow = sortedTasks.filter((t) => !t.completed && t.bucket === 'tomorrow');
   const openLater = sortedTasks.filter((t) => !t.completed && t.bucket === 'later');
   const sortedLogs = sortLogsForDisplay(logs);
 
@@ -91,6 +92,13 @@ export function serializeToMarkdown(
           (t) => `- [ ] ${t.title}${t.category ? ` \`${t.category}\`` : ''}${formatChapterTag(t.chapterId)}`
         )
       : ['_No open tasks for today._']),
+    '',
+    '### Tomorrow',
+    ...(openTomorrow.length > 0
+      ? openTomorrow.map(
+          (t) => `- [ ] ${t.title}${t.category ? ` \`${t.category}\`` : ''}${formatChapterTag(t.chapterId)}`
+        )
+      : ['_No tasks prepared for tomorrow._']),
     '',
     '### Later',
     ...(openLater.length > 0
@@ -218,10 +226,19 @@ export function parseImportJson(rawJson: string): StrikeExportPayload {
     .filter((t): t is TaskItem => Boolean(t && typeof t.id === 'string' && typeof t.title === 'string'))
     .map((t) => {
       const chap = getChapterById(typeof t.chapterId === 'string' ? t.chapterId : undefined);
+      const bucket =
+        t.bucket === 'tomorrow' ? 'tomorrow' : t.bucket === 'later' ? 'later' : 'today';
+      const scheduledForDateKey =
+        bucket === 'tomorrow' &&
+        typeof t.scheduledForDateKey === 'string' &&
+        /^\d{4}-\d{2}-\d{2}$/.test(t.scheduledForDateKey)
+          ? t.scheduledForDateKey
+          : undefined;
       return {
         id: t.id,
         title: t.title,
-        bucket: t.bucket === 'later' ? 'later' : 'today',
+        bucket,
+        ...(scheduledForDateKey ? { scheduledForDateKey } : {}),
         completed: Boolean(t.completed),
         completedAt: typeof t.completedAt === 'number' ? t.completedAt : null,
         completedDateKey: typeof t.completedDateKey === 'string' ? t.completedDateKey : null,

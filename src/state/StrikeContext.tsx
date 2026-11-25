@@ -33,8 +33,10 @@ import {
 } from '../types/models';
 import {
   createTaskRecord,
+  deferTodayTasksToTomorrowLogic,
   markTaskCompletedFromMatchedLog,
   moveTaskBucketLogic,
+  promoteTomorrowTasksLogic,
   sortLogsForDisplay,
   sortTasksForDisplay,
   toggleTaskCompletionLogic,
@@ -89,7 +91,7 @@ import {
   resolveGoogleClientId,
   saveLocalGoogleClientId,
 } from '../services/googleAuth';
-import { createId, toDateKey } from '../utils/date';
+import { addDaysToDateKey, createId, toDateKey } from '../utils/date';
 
 const STORAGE_KEYS = {
   tasks: 'strike.tasks.v1',
@@ -139,6 +141,8 @@ export interface NewMistakeInput {
 }
 
 interface StrikeContextValue {
+  todayKey: string;
+  tomorrowKey: string;
   tasks: TaskItem[];
   logs: LogEntry[];
   preferences: UserPreferences;
@@ -164,6 +168,8 @@ interface StrikeContextValue {
   ) => void;
   toggleTaskCompletion: (taskId: string) => void;
   moveTaskBucket: (taskId: string, bucket: TaskBucket) => void;
+  promoteAllTomorrowToToday: () => void;
+  deferAllTodayToTomorrow: () => void;
   deleteTask: (taskId: string) => void;
 
   // Daily log & Gemini actions
@@ -421,9 +427,13 @@ function stripImagesForLocalStorage(doubts: DoubtItem[]): DoubtItem[] {
 }
 
 export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [tasks, setTasks] = useState<TaskItem[]>(() =>
-    sortTasksForDisplay(loadLocalJson<TaskItem[]>(STORAGE_KEYS.tasks, []))
-  );
+  const [todayKey, setTodayKey] = useState<string>(() => toDateKey());
+  const tomorrowKey = useMemo(() => addDaysToDateKey(todayKey, 1), [todayKey]);
+
+  const [tasks, setTasks] = useState<TaskItem[]>(() => {
+    const initial = sortTasksForDisplay(loadLocalJson<TaskItem[]>(STORAGE_KEYS.tasks, []));
+    return promoteTomorrowTasksLogic(initial, { mode: 'due_only', todayKey: toDateKey() }).nextTasks;
+  });
   const [logs, setLogs] = useState<LogEntry[]>(() =>
     sortLogsForDisplay(loadLocalJson<LogEntry[]>(STORAGE_KEYS.logs, []))
   );
@@ -465,6 +475,33 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     () => normalizeStudySettings(preferences.studySettings),
     [preferences.studySettings]
   );
+
+  // Keep todayKey reactive across midnight and when returning to an open tab
+  useEffect(() => {
+    const syncDateKey = () => {
+      const next = toDateKey();
+      setTodayKey((prev) => (prev === next ? prev : next));
+    };
+
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    const msUntilMidnight = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    const midnightTimer = window.setTimeout(syncDateKey, msUntilMidnight);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncDateKey();
+      }
+    };
+
+    window.addEventListener('focus', syncDateKey);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearTimeout(midnightTimer);
+      window.removeEventListener('focus', syncDateKey);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [todayKey]);
 
   // Hydrate cached doubt diagram images from IndexedDB on initial mount
   useEffect(() => {
@@ -803,6 +840,24 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [fbHandles, user]
   );
 
+  // Auto-promote due Tomorrow tasks into Today when the local date arrives or remote tasks arrive
+  useEffect(() => {
+    const { nextTasks, changedTasks, promotedCount } = promoteTomorrowTasksLogic(tasks, {
+      mode: 'due_only',
+      todayKey,
+    });
+    if (changedTasks.length === 0) return;
+
+    setTasks(nextTasks);
+    runRemote((db, uid) => syncBatchToRemote(db, uid, { upsertTasks: changedTasks }));
+    if (promotedCount > 0) {
+      showToast(
+        `Moved ${promotedCount} planned ${promotedCount === 1 ? 'task' : 'tasks'} into Today`,
+        'info'
+      );
+    }
+  }, [tasks, todayKey, runRemote, showToast]);
+
   // --- AI Holistic Chapter Coverage Evaluation ---
   const refreshChapterCoverageWithAi = useCallback(
     async (chapterId: string, options?: { silent?: boolean }) => {
@@ -999,12 +1054,13 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         category,
         subjectId: resolvedChap?.subjectId ?? studyTag?.subjectId,
         chapterId: resolvedChap?.id,
+        scheduledForDateKey: bucket === 'tomorrow' ? tomorrowKey : undefined,
       });
       setTasks((prev) => sortTasksForDisplay([task, ...prev]));
       runRemote((db, uid) => upsertTaskRemote(db, uid, task));
       return task;
     },
-    [runRemote]
+    [runRemote, tomorrowKey]
   );
 
   const updateTask = useCallback(
@@ -1015,9 +1071,20 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const existing = tasksRef.current.find((t) => t.id === taskId);
       if (!existing) return;
 
+      const nextBucket = patch.bucket ?? existing.bucket;
+      const { scheduledForDateKey: existingScheduled, ...existingWithoutScheduled } = existing;
+      const nextScheduled =
+        nextBucket === 'tomorrow'
+          ? patch.bucket === 'tomorrow'
+            ? existingScheduled ?? tomorrowKey
+            : existingScheduled ?? tomorrowKey
+          : undefined;
+
       const updated: TaskItem = {
-        ...existing,
+        ...existingWithoutScheduled,
         ...patch,
+        bucket: nextBucket,
+        ...(nextScheduled ? { scheduledForDateKey: nextScheduled } : {}),
         title: patch.title !== undefined ? patch.title.trim() || existing.title : existing.title,
         updatedAt: Date.now(),
       };
@@ -1025,7 +1092,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setTasks((prev) => sortTasksForDisplay(prev.map((t) => (t.id === taskId ? updated : t))));
       runRemote((db, uid) => upsertTaskRemote(db, uid, updated));
     },
-    [runRemote]
+    [runRemote, tomorrowKey]
   );
 
   const toggleTaskCompletion = useCallback(
@@ -1033,7 +1100,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const result = toggleTaskCompletionLogic(
         { tasks: tasksRef.current, logs: logsRef.current },
         taskId,
-        prefsRef.current.categories
+        prefsRef.current.categories,
+        { todayKey }
       );
       if (!result) return;
 
@@ -1057,18 +1125,52 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         scheduleChapterEvaluation(result.updatedTask.chapterId, 500);
       }
     },
-    [autoTagLogAndEvaluate, runRemote, scheduleChapterEvaluation, showToast]
+    [autoTagLogAndEvaluate, runRemote, scheduleChapterEvaluation, showToast, todayKey]
   );
 
   const moveTaskBucket = useCallback(
     (taskId: string, bucket: TaskBucket) => {
-      const { nextTasks, updatedTask } = moveTaskBucketLogic(tasksRef.current, taskId, bucket);
+      const { nextTasks, updatedTask } = moveTaskBucketLogic(
+        tasksRef.current,
+        taskId,
+        bucket,
+        Date.now(),
+        { scheduledForDateKey: bucket === 'tomorrow' ? tomorrowKey : undefined }
+      );
       if (!updatedTask) return;
       setTasks(sortTasksForDisplay(nextTasks));
       runRemote((db, uid) => upsertTaskRemote(db, uid, updatedTask));
     },
-    [runRemote]
+    [runRemote, tomorrowKey]
   );
+
+  const promoteAllTomorrowToToday = useCallback(() => {
+    const { nextTasks, changedTasks, promotedCount } = promoteTomorrowTasksLogic(
+      tasksRef.current,
+      { mode: 'all', todayKey }
+    );
+    if (changedTasks.length === 0) return;
+    setTasks(nextTasks);
+    runRemote((db, uid) => syncBatchToRemote(db, uid, { upsertTasks: changedTasks }));
+    showToast(
+      `Moved ${promotedCount} ${promotedCount === 1 ? 'task' : 'tasks'} to Today`,
+      'success'
+    );
+  }, [runRemote, showToast, todayKey]);
+
+  const deferAllTodayToTomorrow = useCallback(() => {
+    const { nextTasks, changedTasks } = deferTodayTasksToTomorrowLogic(tasksRef.current, {
+      todayKey,
+      tomorrowKey,
+    });
+    if (changedTasks.length === 0) return;
+    setTasks(nextTasks);
+    runRemote((db, uid) => syncBatchToRemote(db, uid, { upsertTasks: changedTasks }));
+    showToast(
+      `Deferred ${changedTasks.length} ${changedTasks.length === 1 ? 'task' : 'tasks'} to Tomorrow`,
+      'info'
+    );
+  }, [runRemote, showToast, todayKey, tomorrowKey]);
 
   const deleteTask = useCallback(
     (taskId: string) => {
@@ -1893,6 +1995,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         category: s.category,
         subjectId: s.subjectId,
         chapterId: s.chapterId,
+        scheduledForDateKey: s.suggestedBucket === 'tomorrow' ? tomorrowKey : undefined,
       });
       workingTasks = [task, ...workingTasks];
       upsertTasks.push(task);
@@ -1917,7 +2020,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     setPendingSuggestions(null);
     showToast('Updated your Plan from brain dump', 'success');
-  }, [pendingSuggestions, runRemote, showToast]);
+  }, [pendingSuggestions, runRemote, showToast, tomorrowKey]);
 
   // --- Preferences & Categories ---
   const updatePreferences = useCallback(
@@ -2159,6 +2262,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const value = useMemo<StrikeContextValue>(
     () => ({
+      todayKey,
+      tomorrowKey,
       tasks,
       logs,
       preferences,
@@ -2174,6 +2279,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       updateTask,
       toggleTaskCompletion,
       moveTaskBucket,
+      promoteAllTomorrowToToday,
+      deferAllTodayToTomorrow,
       deleteTask,
       addManualLog,
       updateLog,
@@ -2227,6 +2334,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       showToast,
     }),
     [
+      todayKey,
+      tomorrowKey,
       tasks,
       logs,
       preferences,
@@ -2242,6 +2351,8 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       updateTask,
       toggleTaskCompletion,
       moveTaskBucket,
+      promoteAllTomorrowToToday,
+      deferAllTodayToTomorrow,
       deleteTask,
       addManualLog,
       updateLog,
