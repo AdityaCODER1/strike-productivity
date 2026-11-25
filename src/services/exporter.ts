@@ -6,9 +6,12 @@ import {
   DEFAULT_STUDY_SETTINGS,
   DoubtItem,
   LogEntry,
+  MISTAKE_TYPE_META,
+  MistakeItem,
   StrikeExportPayload,
   StudySettings,
   TaskItem,
+  isValidMistakeType,
 } from '../types/models';
 import { sortLogsForDisplay, sortTasksForDisplay } from '../state/taskLogLogic';
 import { toDateKey } from '../utils/date';
@@ -16,6 +19,7 @@ import { toDateKey } from '../utils/date';
 export interface StudyExportExtras {
   chapterProgress?: Record<string, ChapterStudyState>;
   doubts?: DoubtItem[];
+  mistakes?: MistakeItem[];
   studySettings?: StudySettings;
 }
 
@@ -26,7 +30,8 @@ export function buildExportPayload(
   now: Date = new Date(),
   extras?: StudyExportExtras
 ): StrikeExportPayload {
-  const hasExtras = Boolean(
+  const hasMistakes = Boolean(extras?.mistakes && extras.mistakes.length > 0);
+  const hasV2Extras = Boolean(
     extras &&
       ((extras.chapterProgress && Object.keys(extras.chapterProgress).length > 0) ||
         (extras.doubts && extras.doubts.length > 0) ||
@@ -34,7 +39,7 @@ export function buildExportPayload(
   );
 
   return {
-    version: hasExtras ? 2 : 1,
+    version: hasMistakes ? 3 : hasV2Extras ? 2 : 1,
     exportedAt: now.toISOString(),
     app: 'Strike',
     tasks: sortTasksForDisplay(tasks),
@@ -42,6 +47,7 @@ export function buildExportPayload(
     categories,
     ...(extras?.chapterProgress ? { chapterProgress: extras.chapterProgress } : {}),
     ...(extras?.doubts ? { doubts: extras.doubts } : {}),
+    ...(extras?.mistakes ? { mistakes: extras.mistakes } : {}),
     ...(extras?.studySettings ? { studySettings: extras.studySettings } : {}),
   };
 }
@@ -159,6 +165,42 @@ export function serializeToMarkdown(
     lines.push('');
   }
 
+  const mistakes = extras?.mistakes ?? [];
+  if (mistakes.length > 0) {
+    lines.push('## Mistake Log', '');
+    const groupedByChapter = new Map<string, MistakeItem[]>();
+    for (const m of mistakes) {
+      const bucket = groupedByChapter.get(m.chapterId) ?? [];
+      bucket.push(m);
+      groupedByChapter.set(m.chapterId, bucket);
+    }
+    for (const [chapterId, items] of groupedByChapter.entries()) {
+      const ch = getChapterById(chapterId);
+      const heading = ch
+        ? `${getSubjectMeta(ch.subjectId).name} Cl.${ch.classLevel} — ${ch.title}`
+        : items[0].subjectId;
+      lines.push(`### ${heading}`);
+      for (const m of items) {
+        const statusBox = m.status === 'fixed' ? '[x]' : '[ ]';
+        const typeLabel = MISTAKE_TYPE_META[m.mistakeType]?.shortLabel ?? m.mistakeType;
+        const repeatBadge = m.repeatCount > 1 ? ` · Repeated ${m.repeatCount}x` : '';
+        const sourceBadge = m.sourceLabel ? ` [${m.sourceLabel}]` : '';
+        lines.push(`- ${statusBox} **${m.title}** \`${typeLabel}\`${repeatBadge}${sourceBadge}`);
+        if (m.mistakeText && m.mistakeText !== m.title) {
+          lines.push(`  - Mistake: ${m.mistakeText}`);
+        }
+        if (m.correctionNote) {
+          lines.push(`  - Rule / Fix: ${m.correctionNote}`);
+        }
+      }
+      const cachedSummary = extras?.chapterProgress?.[chapterId]?.mistakesSummaryAi;
+      if (cachedSummary) {
+        lines.push(`- _Chapter Summary_: ${cachedSummary.replace(/\n+/g, ' ')}`);
+      }
+      lines.push('');
+    }
+  }
+
   return `${lines.join('\n').trim()}\n`;
 }
 
@@ -250,6 +292,20 @@ export function parseImportJson(rawJson: string): StrikeExportPayload {
               )
             ).sort((a, b) => b - a)
           : [],
+        mistakesSummaryAi:
+          typeof val.mistakesSummaryAi === 'string' ? val.mistakesSummaryAi : undefined,
+        mistakesSummaryUpdatedAt:
+          typeof val.mistakesSummaryUpdatedAt === 'number'
+            ? val.mistakesSummaryUpdatedAt
+            : undefined,
+        mistakesSummaryCount:
+          typeof val.mistakesSummaryCount === 'number' ? val.mistakesSummaryCount : undefined,
+        doubtsSummaryAi:
+          typeof val.doubtsSummaryAi === 'string' ? val.doubtsSummaryAi : undefined,
+        doubtsSummaryUpdatedAt:
+          typeof val.doubtsSummaryUpdatedAt === 'number' ? val.doubtsSummaryUpdatedAt : undefined,
+        doubtsSummaryCount:
+          typeof val.doubtsSummaryCount === 'number' ? val.doubtsSummaryCount : undefined,
         updatedAt: typeof val.updatedAt === 'number' ? val.updatedAt : Date.now(),
       };
     }
@@ -282,6 +338,52 @@ export function parseImportJson(rawJson: string): StrikeExportPayload {
       });
   }
 
+  let mistakes: MistakeItem[] | undefined;
+  if (Array.isArray(parsed.mistakes)) {
+    mistakes = parsed.mistakes
+      .filter((m): m is MistakeItem =>
+        Boolean(m && typeof m.id === 'string' && typeof m.title === 'string')
+      )
+      .map((m) => {
+        const chap = getChapterById(m.chapterId);
+        const subjectId =
+          chap?.subjectId ?? (isValidSubjectId(m.subjectId) ? m.subjectId : 'physics');
+        const chapterId = chap?.id ?? (typeof m.chapterId === 'string' ? m.chapterId : '');
+        const repeatCount =
+          typeof m.repeatCount === 'number' && Number.isFinite(m.repeatCount) && m.repeatCount >= 1
+            ? Math.floor(m.repeatCount)
+            : 1;
+        return {
+          id: m.id,
+          subjectId,
+          chapterId,
+          title: m.title.trim(),
+          mistakeText:
+            typeof m.mistakeText === 'string' && m.mistakeText.trim()
+              ? m.mistakeText.trim()
+              : m.title.trim(),
+          correctionNote: typeof m.correctionNote === 'string' ? m.correctionNote : '',
+          mistakeType: isValidMistakeType(m.mistakeType) ? m.mistakeType : 'conceptual',
+          sourceLabel:
+            typeof m.sourceLabel === 'string' && m.sourceLabel.trim()
+              ? m.sourceLabel.trim()
+              : undefined,
+          status: m.status === 'fixed' ? 'fixed' : 'active',
+          repeatCount,
+          lastRepeatedAt: typeof m.lastRepeatedAt === 'number' ? m.lastRepeatedAt : undefined,
+          linkedDoubtId: typeof m.linkedDoubtId === 'string' ? m.linkedDoubtId : undefined,
+          source:
+            m.source === 'brain_dump' ||
+            m.source === 'from_doubt' ||
+            m.source === 'gemini_quick'
+              ? m.source
+              : 'manual',
+          createdAt: typeof m.createdAt === 'number' ? m.createdAt : Date.now(),
+          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : Date.now(),
+        };
+      });
+  }
+
   let studySettings: StudySettings | undefined;
   if (parsed.studySettings && typeof parsed.studySettings === 'object') {
     const start = Math.floor(Number(parsed.studySettings.pyqYearStart) || DEFAULT_STUDY_SETTINGS.pyqYearStart);
@@ -293,8 +395,15 @@ export function parseImportJson(rawJson: string): StrikeExportPayload {
     };
   }
 
+  const version: 1 | 2 | 3 =
+    parsed.version === 3 || (mistakes && mistakes.length > 0)
+      ? 3
+      : parsed.version === 2 || chapterProgress || doubts
+      ? 2
+      : 1;
+
   return {
-    version: parsed.version === 2 || chapterProgress || doubts ? 2 : 1,
+    version,
     exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : new Date().toISOString(),
     app: 'Strike',
     tasks,
@@ -302,6 +411,7 @@ export function parseImportJson(rawJson: string): StrikeExportPayload {
     categories,
     ...(chapterProgress ? { chapterProgress } : {}),
     ...(doubts ? { doubts } : {}),
+    ...(mistakes ? { mistakes } : {}),
     ...(studySettings ? { studySettings } : {}),
   };
 }

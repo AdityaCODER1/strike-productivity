@@ -19,6 +19,9 @@ import {
   FirebaseWebConfig,
   LogEntry,
   MatchedOpenTaskItem,
+  MistakeItem,
+  MistakeSource,
+  MistakeType,
   PendingSuggestions,
   StrikeExportPayload,
   StudySettings,
@@ -26,6 +29,7 @@ import {
   TaskBucket,
   TaskItem,
   UserPreferences,
+  isValidMistakeType,
 } from '../types/models';
 import {
   createTaskRecord,
@@ -36,10 +40,13 @@ import {
   toggleTaskCompletionLogic,
 } from './taskLogLogic';
 import {
+  BrainDumpFocusMode,
+  ChapterSummaryScope,
   analyzeBrainDumpWithGemini,
   classifyStudyItemWithGemini,
   evaluateChapterCoverageWithGemini,
   explainDoubtWithGemini,
+  summarizeChapterItemsWithGemini,
 } from '../services/gemini';
 import {
   deleteDoubtImageLocal,
@@ -51,6 +58,7 @@ import {
   clearLocalFirebaseConfig,
   deleteDoubtRemote,
   deleteLogRemote,
+  deleteMistakeRemote,
   deleteTaskRemote,
   initFirebaseIfConfigured,
   reinitializeFirebaseWithConfig,
@@ -64,12 +72,14 @@ import {
   subscribeUserChapterProgress,
   subscribeUserDoubts,
   subscribeUserLogs,
+  subscribeUserMistakes,
   subscribeUserPreferences,
   subscribeUserTasks,
   syncBatchToRemote,
   upsertChapterProgressRemote,
   upsertDoubtRemote,
   upsertLogRemote,
+  upsertMistakeRemote,
   upsertTaskRemote,
 } from '../services/firebase';
 import {
@@ -87,7 +97,9 @@ const STORAGE_KEYS = {
   prefs: 'strike.prefs.v1',
   chapterProgress: 'strike.chapterProgress.v1',
   doubts: 'strike.doubts.v1',
+  mistakes: 'strike.mistakes.v1',
   migratedDoubtsCategory: 'strike.migratedDoubtsCat.v1',
+  migratedMistakesCategory: 'strike.migratedMistakesCat.v1',
 } as const;
 
 export type SyncStatus = 'local-only' | 'signed-out' | 'syncing' | 'synced' | 'offline' | 'error';
@@ -114,6 +126,18 @@ export interface NewDoubtInput {
   source?: DoubtSource;
 }
 
+export interface NewMistakeInput {
+  subjectId: StudySubjectId;
+  chapterId: string;
+  title: string;
+  mistakeText: string;
+  correctionNote?: string;
+  mistakeType?: MistakeType;
+  sourceLabel?: string;
+  linkedDoubtId?: string;
+  source?: MistakeSource;
+}
+
 interface StrikeContextValue {
   tasks: TaskItem[];
   logs: LogEntry[];
@@ -121,7 +145,9 @@ interface StrikeContextValue {
   studySettings: StudySettings;
   chapterProgress: Record<string, ChapterStudyState>;
   doubts: DoubtItem[];
+  mistakes: MistakeItem[];
   evaluatingChapterIds: string[];
+  summarizingChapterKeys: string[];
   pendingSuggestions: PendingSuggestions | null;
   dismissSuggestions: () => void;
 
@@ -154,11 +180,17 @@ interface StrikeContextValue {
   deleteLog: (logId: string) => void;
   processBrainDump: (
     rawText: string,
-    dateKey?: string
-  ) => Promise<{ addedCount: number; suggestionsCount: number; doubtsCount: number }>;
+    dateKey?: string,
+    options?: { focusMode?: BrainDumpFocusMode }
+  ) => Promise<{
+    addedCount: number;
+    suggestionsCount: number;
+    doubtsCount: number;
+    mistakesCount: number;
+  }>;
   isProcessingDump: boolean;
 
-  // Study Progress, PYQs & Doubts actions
+  // Study Progress, PYQs, Doubts & Mistakes actions
   updateStudySettings: (patch: Partial<StudySettings>) => void;
   toggleChapterPyqYear: (chapterId: string, year: number) => void;
   setChapterPyqYears: (chapterId: string, years: number[]) => void;
@@ -191,6 +223,30 @@ interface StrikeContextValue {
   toggleDoubtStatus: (doubtId: string) => void;
   deleteDoubt: (doubtId: string) => void;
   explainDoubt: (doubtId: string) => Promise<string>;
+  addMistake: (input: NewMistakeInput) => MistakeItem | null;
+  addMistakesBatch: (inputs: NewMistakeInput[]) => MistakeItem[];
+  updateMistake: (
+    mistakeId: string,
+    patch: Partial<
+      Pick<
+        MistakeItem,
+        | 'subjectId'
+        | 'chapterId'
+        | 'title'
+        | 'mistakeText'
+        | 'correctionNote'
+        | 'mistakeType'
+        | 'sourceLabel'
+        | 'status'
+        | 'repeatCount'
+        | 'lastRepeatedAt'
+      >
+    >
+  ) => void;
+  toggleMistakeStatus: (mistakeId: string) => void;
+  incrementMistakeRepeat: (mistakeId: string) => void;
+  deleteMistake: (mistakeId: string) => void;
+  generateChapterSummary: (chapterId: string, scope: ChapterSummaryScope) => Promise<string>;
 
   // Suggestion sheet actions
   acceptSuggestedTask: (suggestionId: string, bucket: TaskBucket) => void;
@@ -287,6 +343,43 @@ function ensureDoubtsCategoryOnce(categories: CategoryConfig[]): CategoryConfig[
   return next;
 }
 
+function ensureMistakesCategoryOnce(categories: CategoryConfig[]): CategoryConfig[] {
+  const alreadyMigrated = (() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.migratedMistakesCategory) === '1';
+    } catch {
+      return true;
+    }
+  })();
+
+  if (alreadyMigrated) return categories;
+
+  try {
+    localStorage.setItem(STORAGE_KEYS.migratedMistakesCategory, '1');
+  } catch {
+    // ignore storage errors
+  }
+
+  const hasMistakes = categories.some((c) => c.name.trim().toLowerCase() === 'mistakes');
+  if (hasMistakes) return categories;
+
+  const doubtsIndex = categories.findIndex((c) => c.name.trim().toLowerCase() === 'doubts');
+  const learningIndex = categories.findIndex((c) => c.name.trim().toLowerCase() === 'learning');
+  const insertAfter = doubtsIndex >= 0 ? doubtsIndex : learningIndex;
+  const next = [...categories];
+  const mistakesConfig: CategoryConfig = {
+    id: 'cat-mistakes',
+    name: 'Mistakes',
+    colorToken: 'coral',
+  };
+  if (insertAfter >= 0) {
+    next.splice(insertAfter + 1, 0, mistakesConfig);
+  } else {
+    next.push(mistakesConfig);
+  }
+  return next;
+}
+
 function getInitialPreferences(): UserPreferences {
   const stored = loadLocalJson<Partial<UserPreferences>>(STORAGE_KEYS.prefs, {});
   const baseCategories =
@@ -299,7 +392,7 @@ function getInitialPreferences(): UserPreferences {
       typeof stored.geminiModel === 'string' && stored.geminiModel.trim()
         ? stored.geminiModel
         : DEFAULT_GEMINI_MODEL,
-    categories: ensureDoubtsCategoryOnce(baseCategories),
+    categories: ensureMistakesCategoryOnce(ensureDoubtsCategoryOnce(baseCategories)),
     studySettings: normalizeStudySettings(stored.studySettings),
     updatedAt: typeof stored.updatedAt === 'number' ? stored.updatedAt : 0,
   };
@@ -309,6 +402,14 @@ function sortDoubtsForDisplay(doubts: DoubtItem[]): DoubtItem[] {
   return [...doubts].sort((a, b) => {
     if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
     return b.createdAt - a.createdAt;
+  });
+}
+
+function sortMistakesForDisplay(mistakes: MistakeItem[]): MistakeItem[] {
+  return [...mistakes].sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'active' ? -1 : 1;
+    if (b.repeatCount !== a.repeatCount) return b.repeatCount - a.repeatCount;
+    return b.updatedAt - a.updatedAt;
   });
 }
 
@@ -333,7 +434,11 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [doubts, setDoubts] = useState<DoubtItem[]>(() =>
     sortDoubtsForDisplay(loadLocalJson<DoubtItem[]>(STORAGE_KEYS.doubts, []))
   );
+  const [mistakes, setMistakes] = useState<MistakeItem[]>(() =>
+    sortMistakesForDisplay(loadLocalJson<MistakeItem[]>(STORAGE_KEYS.mistakes, []))
+  );
   const [evaluatingChapterIds, setEvaluatingChapterIds] = useState<string[]>([]);
+  const [summarizingChapterKeys, setSummarizingChapterKeys] = useState<string[]>([]);
   const [pendingSuggestions, setPendingSuggestions] = useState<PendingSuggestions | null>(null);
   const [isProcessingDump, setIsProcessingDump] = useState(false);
 
@@ -353,6 +458,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const prefsRef = useRef(preferences);
   const chapterProgressRef = useRef(chapterProgress);
   const doubtsRef = useRef(doubts);
+  const mistakesRef = useRef(mistakes);
   const hydratedUidRef = useRef<string | null>(null);
 
   const studySettings = useMemo(
@@ -427,6 +533,15 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Ignore storage quota errors
     }
   }, [doubts]);
+
+  useEffect(() => {
+    mistakesRef.current = mistakes;
+    try {
+      localStorage.setItem(STORAGE_KEYS.mistakes, JSON.stringify(mistakes));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [mistakes]);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     if (toastTimerRef.current) {
@@ -516,6 +631,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     let initialLogsMerged = false;
     let initialProgressMerged = false;
     let initialDoubtsMerged = false;
+    let initialMistakesMerged = false;
 
     const handleErr = (err: Error) => {
       setSyncError(err.message);
@@ -620,6 +736,27 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       handleErr
     );
 
+    const unsubMistakes = subscribeUserMistakes(
+      fbHandles.db,
+      uid,
+      (remoteMistakes) => {
+        if (!initialMistakesMerged && hydratedUidRef.current !== uid) {
+          initialMistakesMerged = true;
+          const remoteIds = new Set(remoteMistakes.map((m) => m.id));
+          const localOnly = mistakesRef.current.filter((m) => !remoteIds.has(m.id));
+          if (localOnly.length > 0) {
+            void syncBatchToRemote(fbHandles.db, uid, { upsertMistakes: localOnly }).catch(handleErr);
+            setMistakes(sortMistakesForDisplay([...remoteMistakes, ...localOnly]));
+          } else {
+            setMistakes(sortMistakesForDisplay(remoteMistakes));
+          }
+        } else {
+          setMistakes(sortMistakesForDisplay(remoteMistakes));
+        }
+      },
+      handleErr
+    );
+
     const unsubPrefs = subscribeUserPreferences(
       fbHandles.db,
       uid,
@@ -649,6 +786,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       unsubLogs();
       unsubProgress();
       unsubDoubts();
+      unsubMistakes();
       unsubPrefs();
     };
   }, [fbHandles, user]);
@@ -693,6 +831,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Fast-path: no logs and no PYQ years -> 0% without burning an API call
       if (chapterLogs.length === 0 && completedPyqYears.length === 0) {
         const zeroState: ChapterStudyState = {
+          ...(existingProgress ?? {}),
           chapterId: chapter.id,
           subjectId: chapter.subjectId,
           coveragePercent: 0,
@@ -722,6 +861,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const now = Date.now();
         const latestExisting = chapterProgressRef.current[chapterId];
         const nextState: ChapterStudyState = {
+          ...(latestExisting ?? {}),
           chapterId: chapter.id,
           subjectId: chapter.subjectId,
           coveragePercent: result.coveragePercent,
@@ -1050,6 +1190,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         : [...currentYears, year].sort((a, b) => b - a);
 
       const nextState: ChapterStudyState = {
+        ...(existing ?? {}),
         chapterId: chapter.id,
         subjectId: chapter.subjectId,
         coveragePercent: existing?.coveragePercent ?? 0,
@@ -1074,6 +1215,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const existing = chapterProgressRef.current[chapterId];
       const cleanYears = Array.from(new Set(years)).sort((a, b) => b - a);
       const nextState: ChapterStudyState = {
+        ...(existing ?? {}),
         chapterId: chapter.id,
         subjectId: chapter.subjectId,
         coveragePercent: existing?.coveragePercent ?? 0,
@@ -1097,6 +1239,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const clamped = Math.max(0, Math.min(100, Math.round(percent)));
       const existing = chapterProgressRef.current[chapterId];
       const nextState: ChapterStudyState = {
+        ...(existing ?? {}),
         chapterId: chapter.id,
         subjectId: chapter.subjectId,
         coveragePercent: clamped,
@@ -1260,12 +1403,230 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [updateDoubt]
   );
 
+  // --- Mistake Log Actions ---
+  const buildMistakeRecord = useCallback((input: NewMistakeInput, timestamp: number): MistakeItem | null => {
+    const title = input.title.trim();
+    const mistakeText = input.mistakeText.trim() || title;
+    if (!title && !mistakeText) return null;
+
+    const chap = getChapterById(input.chapterId);
+    const subjectId = chap?.subjectId ?? input.subjectId;
+    const chapterId = chap?.id ?? input.chapterId;
+    const cleanSource = input.sourceLabel?.trim();
+
+    return {
+      id: createId('mistake'),
+      subjectId,
+      chapterId,
+      title: title || mistakeText.slice(0, 80),
+      mistakeText,
+      correctionNote: input.correctionNote?.trim() ?? '',
+      mistakeType: isValidMistakeType(input.mistakeType) ? input.mistakeType : 'conceptual',
+      ...(cleanSource ? { sourceLabel: cleanSource } : {}),
+      status: 'active',
+      repeatCount: 1,
+      ...(input.linkedDoubtId ? { linkedDoubtId: input.linkedDoubtId } : {}),
+      source: input.source ?? 'manual',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+  }, []);
+
+  const addMistake = useCallback(
+    (input: NewMistakeInput): MistakeItem | null => {
+      const item = buildMistakeRecord(input, Date.now());
+      if (!item) return null;
+      setMistakes((prev) => sortMistakesForDisplay([item, ...prev]));
+      runRemote((db, uid) => upsertMistakeRemote(db, uid, item));
+      return item;
+    },
+    [buildMistakeRecord, runRemote]
+  );
+
+  const addMistakesBatch = useCallback(
+    (inputs: NewMistakeInput[]): MistakeItem[] => {
+      const now = Date.now();
+      const created: MistakeItem[] = [];
+      inputs.forEach((inp, idx) => {
+        const rec = buildMistakeRecord(inp, now + idx);
+        if (rec) created.push(rec);
+      });
+      if (created.length === 0) return [];
+      setMistakes((prev) => sortMistakesForDisplay([...created, ...prev]));
+      runRemote((db, uid) => syncBatchToRemote(db, uid, { upsertMistakes: created }));
+      return created;
+    },
+    [buildMistakeRecord, runRemote]
+  );
+
+  const updateMistake = useCallback(
+    (
+      mistakeId: string,
+      patch: Partial<
+        Pick<
+          MistakeItem,
+          | 'subjectId'
+          | 'chapterId'
+          | 'title'
+          | 'mistakeText'
+          | 'correctionNote'
+          | 'mistakeType'
+          | 'sourceLabel'
+          | 'status'
+          | 'repeatCount'
+          | 'lastRepeatedAt'
+        >
+      >
+    ) => {
+      const existing = mistakesRef.current.find((m) => m.id === mistakeId);
+      if (!existing) return;
+
+      const chap = patch.chapterId ? getChapterById(patch.chapterId) : undefined;
+      const nextSourceLabel =
+        patch.sourceLabel !== undefined
+          ? patch.sourceLabel.trim() || undefined
+          : existing.sourceLabel;
+
+      const updated: MistakeItem = {
+        ...existing,
+        ...patch,
+        subjectId: chap?.subjectId ?? patch.subjectId ?? existing.subjectId,
+        chapterId: chap?.id ?? patch.chapterId ?? existing.chapterId,
+        title: patch.title !== undefined ? patch.title.trim() || existing.title : existing.title,
+        mistakeText:
+          patch.mistakeText !== undefined
+            ? patch.mistakeText.trim() || existing.mistakeText
+            : existing.mistakeText,
+        correctionNote:
+          patch.correctionNote !== undefined ? patch.correctionNote : existing.correctionNote,
+        mistakeType:
+          patch.mistakeType !== undefined && isValidMistakeType(patch.mistakeType)
+            ? patch.mistakeType
+            : existing.mistakeType,
+        sourceLabel: nextSourceLabel,
+        repeatCount:
+          patch.repeatCount !== undefined && Number.isFinite(patch.repeatCount)
+            ? Math.max(1, Math.floor(patch.repeatCount))
+            : existing.repeatCount,
+        updatedAt: Date.now(),
+      };
+
+      setMistakes((prev) =>
+        sortMistakesForDisplay(prev.map((m) => (m.id === mistakeId ? updated : m)))
+      );
+      runRemote((db, uid) => upsertMistakeRemote(db, uid, updated));
+    },
+    [runRemote]
+  );
+
+  const toggleMistakeStatus = useCallback(
+    (mistakeId: string) => {
+      const existing = mistakesRef.current.find((m) => m.id === mistakeId);
+      if (!existing) return;
+      const nextStatus = existing.status === 'active' ? 'fixed' : 'active';
+      updateMistake(mistakeId, { status: nextStatus });
+      showToast(
+        nextStatus === 'fixed' ? 'Mistake marked fixed' : 'Mistake reopened for review',
+        'success'
+      );
+    },
+    [showToast, updateMistake]
+  );
+
+  const incrementMistakeRepeat = useCallback(
+    (mistakeId: string) => {
+      const existing = mistakesRef.current.find((m) => m.id === mistakeId);
+      if (!existing) return;
+      const nextCount = existing.repeatCount + 1;
+      updateMistake(mistakeId, {
+        repeatCount: nextCount,
+        status: 'active',
+        lastRepeatedAt: Date.now(),
+      });
+      showToast(`Logged repeat (${nextCount}×) — flagged active`, 'info');
+    },
+    [showToast, updateMistake]
+  );
+
+  const deleteMistake = useCallback(
+    (mistakeId: string) => {
+      setMistakes((prev) => prev.filter((m) => m.id !== mistakeId));
+      runRemote((db, uid) => deleteMistakeRemote(db, uid, mistakeId));
+    },
+    [runRemote]
+  );
+
+  const generateChapterSummary = useCallback(
+    async (chapterId: string, scope: ChapterSummaryScope): Promise<string> => {
+      const chapter = getChapterById(chapterId);
+      if (!chapter) throw new Error('NCERT chapter not found.');
+
+      const apiKey = prefsRef.current.geminiApiKey.trim();
+      if (!apiKey) {
+        throw new Error('Add your Gemini API key in Settings to generate chapter summaries.');
+      }
+
+      const key = `${chapterId}:${scope}`;
+      setSummarizingChapterKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+
+      try {
+        const chapterMistakes = mistakesRef.current.filter((m) => m.chapterId === chapterId);
+        const chapterDoubts = doubtsRef.current.filter((d) => d.chapterId === chapterId);
+
+        const summary = await summarizeChapterItemsWithGemini({
+          apiKey,
+          model: prefsRef.current.geminiModel,
+          chapter,
+          scope,
+          mistakes: chapterMistakes,
+          doubts: chapterDoubts,
+        });
+
+        const now = Date.now();
+        const existing = chapterProgressRef.current[chapterId];
+        const nextState: ChapterStudyState = {
+          ...(existing ?? {}),
+          chapterId: chapter.id,
+          subjectId: chapter.subjectId,
+          coveragePercent: existing?.coveragePercent ?? 0,
+          coverageSource: existing?.coverageSource ?? 'ai',
+          completedPyqYears: existing?.completedPyqYears ?? [],
+          ...(scope === 'mistakes'
+            ? {
+                mistakesSummaryAi: summary,
+                mistakesSummaryUpdatedAt: now,
+                mistakesSummaryCount: chapterMistakes.length,
+              }
+            : {
+                doubtsSummaryAi: summary,
+                doubtsSummaryUpdatedAt: now,
+                doubtsSummaryCount: chapterDoubts.length,
+              }),
+          updatedAt: now,
+        };
+
+        setChapterProgress((prev) => ({ ...prev, [chapter.id]: nextState }));
+        runRemote((db, uid) => upsertChapterProgressRemote(db, uid, nextState));
+        return summary;
+      } finally {
+        setSummarizingChapterKeys((prev) => prev.filter((k) => k !== key));
+      }
+    },
+    [runRemote]
+  );
+
   // --- Gemini Brain Dump ---
   const processBrainDump = useCallback(
     async (
       rawText: string,
-      dateKey: string = toDateKey()
-    ): Promise<{ addedCount: number; suggestionsCount: number; doubtsCount: number }> => {
+      dateKey: string = toDateKey(),
+      options?: { focusMode?: BrainDumpFocusMode }
+    ): Promise<{
+      addedCount: number;
+      suggestionsCount: number;
+      doubtsCount: number;
+      mistakesCount: number;
+    }> => {
       setIsProcessingDump(true);
       try {
         const openTasks = tasksRef.current
@@ -1281,6 +1642,7 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           openTasks,
           dateKey,
           includeArchivedNcert: currentSettings.showArchivedNcert,
+          focusMode: options?.focusMode ?? 'all',
         });
 
         const now = Date.now();
@@ -1314,17 +1676,37 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           updatedAt: now + idx,
         }));
 
+        const createdMistakes: MistakeItem[] = (analysis.mistakes ?? []).map((m, idx) => ({
+          id: createId('mistake'),
+          subjectId: m.subjectId,
+          chapterId: m.chapterId,
+          title: m.title,
+          mistakeText: m.mistakeText,
+          correctionNote: m.correctionNote,
+          mistakeType: m.mistakeType,
+          ...(m.sourceLabel ? { sourceLabel: m.sourceLabel } : {}),
+          status: 'active',
+          repeatCount: 1,
+          source: 'brain_dump',
+          createdAt: now + idx,
+          updatedAt: now + idx,
+        }));
+
         if (createdLogs.length > 0) {
           setLogs((prev) => sortLogsForDisplay([...createdLogs, ...prev]));
         }
         if (createdDoubts.length > 0) {
           setDoubts((prev) => sortDoubtsForDisplay([...createdDoubts, ...prev]));
         }
-        if (createdLogs.length > 0 || createdDoubts.length > 0) {
+        if (createdMistakes.length > 0) {
+          setMistakes((prev) => sortMistakesForDisplay([...createdMistakes, ...prev]));
+        }
+        if (createdLogs.length > 0 || createdDoubts.length > 0 || createdMistakes.length > 0) {
           runRemote((db, uid) =>
             syncBatchToRemote(db, uid, {
               upsertLogs: createdLogs.length > 0 ? createdLogs : undefined,
               upsertDoubts: createdDoubts.length > 0 ? createdDoubts : undefined,
+              upsertMistakes: createdMistakes.length > 0 ? createdMistakes : undefined,
             })
           );
         }
@@ -1379,31 +1761,53 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           });
         }
 
-        if (createdLogs.length > 0 && createdDoubts.length > 0) {
-          showToast(
-            `Logged ${createdLogs.length} ${createdLogs.length === 1 ? 'activity' : 'activities'} & saved ${createdDoubts.length} ${createdDoubts.length === 1 ? 'doubt' : 'doubts'}`,
-            'success'
+        const toastParts: string[] = [];
+        if (createdLogs.length > 0) {
+          toastParts.push(
+            `Logged ${createdLogs.length} ${createdLogs.length === 1 ? 'activity' : 'activities'}`
           );
-        } else if (createdLogs.length > 0) {
-          showToast(
-            `Logged ${createdLogs.length} ${createdLogs.length === 1 ? 'activity' : 'activities'}`,
-            'success'
+        }
+        if (createdMistakes.length > 0) {
+          toastParts.push(
+            `${toastParts.length === 0 ? 'Saved ' : ''}${createdMistakes.length} ${
+              createdMistakes.length === 1 ? 'mistake' : 'mistakes'
+            }`
           );
-        } else if (createdDoubts.length > 0) {
-          showToast(
-            `Saved ${createdDoubts.length} ${createdDoubts.length === 1 ? 'doubt' : 'doubts'} to Study`,
-            'success'
+        }
+        if (createdDoubts.length > 0) {
+          toastParts.push(
+            `${toastParts.length === 0 ? 'Saved ' : ''}${createdDoubts.length} ${
+              createdDoubts.length === 1 ? 'doubt' : 'doubts'
+            }`
           );
+        }
+
+        if (toastParts.length > 0) {
+          const joined =
+            toastParts.length === 1
+              ? toastParts[0]
+              : `${toastParts.slice(0, -1).join(', ')} & ${toastParts[toastParts.length - 1]}`;
+          const suffix =
+            createdLogs.length === 0 && (createdMistakes.length > 0 || createdDoubts.length > 0)
+              ? ' to Study'
+              : '';
+          showToast(`${joined}${suffix}`, 'success');
         } else if (suggestionsCount > 0) {
           showToast('Detected follow-up tasks to review', 'info');
         } else {
-          showToast('No distinct activities detected in that note', 'info');
+          showToast(
+            options?.focusMode === 'mistakes'
+              ? 'No distinct mistakes detected in that note'
+              : 'No distinct activities detected in that note',
+            'info'
+          );
         }
 
         return {
           addedCount: createdLogs.length,
           suggestionsCount,
           doubtsCount: createdDoubts.length,
+          mistakesCount: createdMistakes.length,
         };
       } finally {
         setIsProcessingDump(false);
@@ -1627,9 +2031,16 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       }
 
+      const mergedMistakesMap = new Map<string, MistakeItem>();
+      for (const m of mistakesRef.current) mergedMistakesMap.set(m.id, m);
+      for (const m of payload.mistakes ?? []) {
+        mergedMistakesMap.set(m.id, m);
+      }
+
       const nextTasks = sortTasksForDisplay(Array.from(mergedTasksMap.values()));
       const nextLogs = sortLogsForDisplay(Array.from(mergedLogsMap.values()));
       const nextDoubts = sortDoubtsForDisplay(Array.from(mergedDoubtsMap.values()));
+      const nextMistakes = sortMistakesForDisplay(Array.from(mergedMistakesMap.values()));
       const nextPrefs: UserPreferences = {
         ...prefsRef.current,
         categories: payload.categories.length > 0 ? payload.categories : prefsRef.current.categories,
@@ -1643,10 +2054,12 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setLogs(nextLogs);
       setChapterProgress(mergedProgress);
       setDoubts(nextDoubts);
+      setMistakes(nextMistakes);
       setPreferences(nextPrefs);
 
       const importedProgressList = Object.values(payload.chapterProgress ?? {});
       const importedDoubtsList = payload.doubts ?? [];
+      const importedMistakesList = payload.mistakes ?? [];
 
       runRemote((db, uid) =>
         syncBatchToRemote(db, uid, {
@@ -1654,13 +2067,19 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           upsertLogs: payload.logs,
           upsertChapterProgress: importedProgressList.length > 0 ? importedProgressList : undefined,
           upsertDoubts: importedDoubtsList.length > 0 ? importedDoubtsList : undefined,
+          upsertMistakes: importedMistakesList.length > 0 ? importedMistakesList : undefined,
           preferences: nextPrefs,
         })
       );
 
+      const extraSummary: string[] = [];
+      if (importedDoubtsList.length > 0) extraSummary.push(`${importedDoubtsList.length} doubts`);
+      if (importedMistakesList.length > 0)
+        extraSummary.push(`${importedMistakesList.length} mistakes`);
+
       showToast(
         `Imported ${payload.tasks.length} tasks, ${payload.logs.length} logs${
-          importedDoubtsList.length > 0 ? ` & ${importedDoubtsList.length} doubts` : ''
+          extraSummary.length > 0 ? ` & ${extraSummary.join(', ')}` : ''
         }`,
         'success'
       );
@@ -1746,7 +2165,9 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       studySettings,
       chapterProgress,
       doubts,
+      mistakes,
       evaluatingChapterIds,
+      summarizingChapterKeys,
       pendingSuggestions,
       dismissSuggestions,
       addTask,
@@ -1770,6 +2191,13 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       toggleDoubtStatus,
       deleteDoubt,
       explainDoubt,
+      addMistake,
+      addMistakesBatch,
+      updateMistake,
+      toggleMistakeStatus,
+      incrementMistakeRepeat,
+      deleteMistake,
+      generateChapterSummary,
       acceptSuggestedTask,
       dismissSuggestedTask,
       acceptMatchedTask,
@@ -1805,7 +2233,9 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       studySettings,
       chapterProgress,
       doubts,
+      mistakes,
       evaluatingChapterIds,
+      summarizingChapterKeys,
       pendingSuggestions,
       dismissSuggestions,
       addTask,
@@ -1829,6 +2259,13 @@ export const StrikeProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       toggleDoubtStatus,
       deleteDoubt,
       explainDoubt,
+      addMistake,
+      addMistakesBatch,
+      updateMistake,
+      toggleMistakeStatus,
+      incrementMistakeRepeat,
+      deleteMistake,
+      generateChapterSummary,
       acceptSuggestedTask,
       dismissSuggestedTask,
       acceptMatchedTask,

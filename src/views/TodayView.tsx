@@ -1,15 +1,27 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Loader2,
   PenLine,
   Plus,
   Sparkles,
 } from 'lucide-react';
-import { StudySubjectId, isDoubtsCategoryName, isStudyTaggedCategory } from '../data/ncertCatalog';
+import {
+  StudySubjectId,
+  isDoubtsCategoryName,
+  isMistakesCategoryName,
+  isStudyTaggedCategory,
+} from '../data/ncertCatalog';
 import { useStrike } from '../state/StrikeContext';
-import { LogEntry } from '../types/models';
+import {
+  LogEntry,
+  MISTAKE_TYPES,
+  MISTAKE_TYPE_META,
+  MistakeType,
+} from '../types/models';
+import { BrainDumpFocusMode } from '../services/gemini';
 import { formatFullDateSubtitle, formatTimeShort, toDateKey } from '../utils/date';
 import { CategoryBadge } from '../components/CategoryBadge';
 import { ChapterPickerControl, ChapterTagChip } from '../components/ChapterPickerControl';
@@ -29,10 +41,12 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
     processBrainDump,
     addManualLog,
     addDoubt,
+    addMistake,
     showToast,
   } = useStrike();
 
   const [dumpText, setDumpText] = useState('');
+  const [dumpMode, setDumpMode] = useState<BrainDumpFocusMode>('all');
   const [dumpError, setDumpError] = useState<string | null>(null);
   const [composerMode, setComposerMode] = useState<'ai' | 'manual'>('ai');
   const [manualTitle, setManualTitle] = useState('');
@@ -41,11 +55,14 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
   );
   const [manualSubjectId, setManualSubjectId] = useState<StudySubjectId | undefined>(undefined);
   const [manualChapterId, setManualChapterId] = useState<string | undefined>(undefined);
+  const [manualMistakeType, setManualMistakeType] = useState<MistakeType>('conceptual');
+  const [manualCorrectionNote, setManualCorrectionNote] = useState('');
   const [editingEntry, setEditingEntry] = useState<LogEntry | null>(null);
 
   const todayKey = toDateKey();
   const hasGeminiKey = Boolean(preferences.geminiApiKey.trim());
   const isManualStudyCat = isStudyTaggedCategory(manualCategory);
+  const isManualMistakeCat = isMistakesCategoryName(manualCategory);
 
   const todayLogs = useMemo(
     () => logs.filter((entry) => entry.dateKey === todayKey),
@@ -58,7 +75,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
     setDumpError(null);
 
     try {
-      await processBrainDump(dumpText, todayKey);
+      await processBrainDump(dumpText, todayKey, { focusMode: dumpMode });
       setDumpText('');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to process brain dump.';
@@ -88,6 +105,23 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
       addManualLog(manualTitle, resolvedCat, todayKey, studyTag);
       setManualTitle('');
       showToast('Doubt saved to Study & logged today', 'success');
+      return;
+    }
+
+    if (isMistakesCategoryName(resolvedCat) && manualSubjectId && manualChapterId) {
+      addMistake({
+        subjectId: manualSubjectId,
+        chapterId: manualChapterId,
+        title: manualTitle.trim(),
+        mistakeText: manualTitle.trim(),
+        correctionNote: manualCorrectionNote.trim(),
+        mistakeType: manualMistakeType,
+        source: 'manual',
+      });
+      addManualLog(manualTitle, resolvedCat, todayKey, studyTag);
+      setManualTitle('');
+      setManualCorrectionNote('');
+      showToast('Mistake saved to Mistake Log & logged today', 'success');
       return;
     }
 
@@ -153,10 +187,40 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
 
         {composerMode === 'ai' ? (
           <form className="stack-md" onSubmit={handleBrainDumpSubmit}>
+            {/* Focus Mode Preset: Full Recap vs Mistake Dump */}
+            <div className="filter-strip" role="radiogroup" aria-label="Brain dump focus">
+              <button
+                id="brain-dump-mode-all"
+                type="button"
+                role="radio"
+                aria-checked={dumpMode === 'all'}
+                className={`filter-pill ${dumpMode === 'all' ? 'filter-pill--active' : ''}`}
+                onClick={() => setDumpMode('all')}
+              >
+                <Sparkles size={12} />
+                Daily Recap
+              </button>
+              <button
+                id="brain-dump-mode-mistakes"
+                type="button"
+                role="radio"
+                aria-checked={dumpMode === 'mistakes'}
+                className={`filter-pill ${dumpMode === 'mistakes' ? 'filter-pill--active' : ''}`}
+                onClick={() => setDumpMode('mistakes')}
+              >
+                <AlertTriangle size={12} />
+                Mistake Dump
+              </button>
+            </div>
+
             <textarea
               id="brain-dump-textarea"
               className="ios-textarea"
-              placeholder="Dump what you got done today in plain text… e.g. Revised Ray Optics NCERT & solved 2022 PYQs, stuck on lens maker sign convention doubt, went for a 5k run."
+              placeholder={
+                dumpMode === 'mistakes'
+                  ? "Dump mistakes from your test or practice… e.g. Mock #4: forgot Van't Hoff factor for K₂SO₄ in Solutions, flipped lens maker sign convention in Ray Optics, misread 'incorrect' in Plant Kingdom."
+                  : 'Dump what you got done today in plain text… e.g. Revised Ray Optics NCERT & solved 2022 PYQs, messed up lens maker sign convention in practice, stuck on prism deviation doubt, went for a 5k run.'
+              }
               value={dumpText}
               onChange={(e) => setDumpText(e.target.value)}
               disabled={isProcessingDump}
@@ -198,12 +262,14 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               {isProcessingDump ? (
                 <>
                   <Loader2 size={18} className="spin" />
-                  Categorizing with Gemini…
+                  {dumpMode === 'mistakes'
+                    ? 'Extracting mistakes with Gemini…'
+                    : 'Categorizing with Gemini…'}
                 </>
               ) : (
                 <>
                   <Sparkles size={18} />
-                  Log with Gemini
+                  {dumpMode === 'mistakes' ? 'Log Mistakes with Gemini' : 'Log with Gemini'}
                 </>
               )}
             </button>
@@ -217,6 +283,8 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               placeholder={
                 isDoubtsCategoryName(manualCategory)
                   ? 'Write the doubt or question to review…'
+                  : isManualMistakeCat
+                  ? 'Describe the mistake you made…'
                   : 'What did you finish?'
               }
               value={manualTitle}
@@ -257,6 +325,41 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               />
             )}
 
+            {isManualMistakeCat && (
+              <div className="stack-sm">
+                <div className="filter-strip" role="radiogroup" aria-label="Quick mistake type">
+                  {MISTAKE_TYPES.map((typeKey) => {
+                    const meta = MISTAKE_TYPE_META[typeKey];
+                    const active = manualMistakeType === typeKey;
+                    return (
+                      <button
+                        key={typeKey}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        className={`filter-pill ${active ? 'filter-pill--active' : ''}`}
+                        onClick={() => setManualMistakeType(typeKey)}
+                      >
+                        <span
+                          className={`cat-dot cat-swatch--${meta.colorToken}`}
+                          style={active ? { background: '#ffffff' } : undefined}
+                        />
+                        {meta.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+                <input
+                  type="text"
+                  className="ios-input"
+                  style={{ fontSize: 14.5, padding: '10px 12px' }}
+                  placeholder="Correct rule / takeaway to remember (optional)…"
+                  value={manualCorrectionNote}
+                  onChange={(e) => setManualCorrectionNote(e.target.value)}
+                />
+              </div>
+            )}
+
             <button
               id="manual-log-submit"
               type="submit"
@@ -266,6 +369,8 @@ export const TodayView: React.FC<TodayViewProps> = ({ onOpenSettings }) => {
               <Plus size={18} />
               {isDoubtsCategoryName(manualCategory) && manualChapterId
                 ? 'Save Doubt & Log Today'
+                : isManualMistakeCat && manualChapterId
+                ? 'Save Mistake & Log Today'
                 : 'Add to Today’s Log'}
             </button>
           </form>

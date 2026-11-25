@@ -126,4 +126,77 @@ describe('exporter service', () => {
     expect(md).toContain('## Doubts Archive');
     expect(md).toContain('TIR critical angle');
   });
+
+  it('exports and restores v3 mistakes and cached chapter AI summaries in JSON and Markdown', () => {
+    const extras = {
+      chapterProgress: {
+        'chem-12-solutions': {
+          chapterId: 'chem-12-solutions',
+          subjectId: 'chemistry' as const,
+          coveragePercent: 55,
+          coverageSource: 'ai' as const,
+          completedPyqYears: [2024],
+          mistakesSummaryAi: 'Always multiply colligative formulas by Van’t Hoff factor i.',
+          mistakesSummaryUpdatedAt: 9500,
+          mistakesSummaryCount: 1,
+          doubtsSummaryAi: 'Review Raoult law positive vs negative deviation examples.',
+          doubtsSummaryUpdatedAt: 9600,
+          doubtsSummaryCount: 1,
+          updatedAt: 9600,
+        },
+      },
+      mistakes: [
+        {
+          id: 'mistake_1',
+          subjectId: 'chemistry' as const,
+          chapterId: 'chem-12-solutions',
+          title: "Forgot Van't Hoff factor for K₂SO₄",
+          mistakeText: 'Used i=1 instead of i=3 for dilute K₂SO₄ osmotic pressure',
+          correctionNote: 'K₂SO₄ → 2K⁺ + SO₄²⁻ gives i = 3 for complete dissociation',
+          mistakeType: 'formula' as const,
+          sourceLabel: 'Mock #4',
+          status: 'active' as const,
+          repeatCount: 2,
+          lastRepeatedAt: 9100,
+          source: 'brain_dump' as const,
+          createdAt: 8500,
+          updatedAt: 9100,
+        },
+      ],
+    };
+
+    const json = serializeToJson(
+      sampleTasks,
+      sampleLogs,
+      DEFAULT_CATEGORIES,
+      new Date(2026, 10, 23, 12, 0, 0),
+      extras
+    );
+    const restored = parseImportJson(json);
+
+    expect(restored.version).toBe(3);
+    expect(restored.mistakes).toHaveLength(1);
+    expect(restored.mistakes?.[0].mistakeType).toBe('formula');
+    expect(restored.mistakes?.[0].repeatCount).toBe(2);
+    expect(restored.mistakes?.[0].sourceLabel).toBe('Mock #4');
+    expect(restored.chapterProgress?.['chem-12-solutions'].mistakesSummaryAi).toContain(
+      'Van’t Hoff factor'
+    );
+    expect(restored.chapterProgress?.['chem-12-solutions'].doubtsSummaryAi).toContain(
+      'Raoult law'
+    );
+
+    const md = serializeToMarkdown(
+      sampleTasks,
+      sampleLogs,
+      new Date(2026, 10, 23, 12, 0, 0),
+      extras
+    );
+    expect(md).toContain('## Mistake Log');
+    expect(md).toContain('### Chemistry Cl.12 — Solutions');
+    expect(md).toContain("Forgot Van't Hoff factor for K₂SO₄");
+    expect(md).toContain('Repeated 2x');
+    expect(md).toContain('[Mock #4]');
+    expect(md).toContain('Rule / Fix: K₂SO₄ → 2K⁺ + SO₄²⁻');
+  });
 });

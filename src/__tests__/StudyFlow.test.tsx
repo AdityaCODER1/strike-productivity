@@ -210,4 +210,227 @@ describe('Study Hub, NCERT Chapters, PYQs & Doubts end-to-end flows', () => {
     fireEvent.click(screen.getByRole('tab', { name: /^Resolved$/i }));
     expect(screen.getByText('Nernst equation sign doubt')).toBeInTheDocument();
   });
+
+  it('extracts mistakes from Today Mistake Dump, tracks repeats/filters, and generates per-chapter revision summaries for Mistakes & Doubts', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      // 1st call: Today Mistake Dump extraction
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      completedActivities: [],
+                      unfinishedTasks: [],
+                      doubts: [
+                        {
+                          title: 'Abnormal molar mass association case',
+                          questionText: 'Why does benzoic acid dimerize in benzene?',
+                          subjectId: 'chemistry',
+                          chapterId: 'chem-12-solutions',
+                          pyqYear: 2020,
+                        },
+                      ],
+                      mistakes: [
+                        {
+                          title: "Forgot Van't Hoff factor for K₂SO₄",
+                          mistakeText: 'Used i=1 instead of i=3 in osmotic pressure formula',
+                          correctionNote: 'Multiply π = iCRT with i = 3 for K₂SO₄',
+                          mistakeType: 'formula',
+                          subjectId: 'chemistry',
+                          chapterId: 'chem-12-solutions',
+                          sourceLabel: 'Mock #4',
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      } as unknown as Response)
+      // 2nd call: Per-chapter Mistake Revision Summary
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: '1. Top Weak Spot: Electrolyte Van’t Hoff factor i in colligative properties.\n2. Rule: Always check dissociation before computing π or ΔTb.',
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      } as unknown as Response)
+      // 3rd call: Per-chapter Doubts Revision Summary
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: '1. Core Theme: Dimerization lowers particle count (i < 1) via H-bonding in non-polar solvents.',
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      } as unknown as Response);
+
+    render(<App />);
+
+    // Add Gemini API key
+    clickTab('Settings');
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'AIzaMistakeKey' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save Gemini Settings/i }));
+
+    // Today -> Brain Dump -> switch to Mistake Dump preset
+    clickTab('Today');
+    fireEvent.click(screen.getByRole('radio', { name: /Mistake Dump/i }));
+    fireEvent.change(screen.getByPlaceholderText(/Dump mistakes from your test/i), {
+      target: {
+        value: 'Mock #4: forgot i=3 for K2SO4 in Solutions, also confused why benzoic acid dimerizes in benzene 2020 pyq',
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Log Mistakes with Gemini/i }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // Open Study -> Mistakes and verify the captured mistake is grouped under Solutions
+    clickTab('Study');
+    fireEvent.click(screen.getByRole('tab', { name: /^Mistakes/i }));
+    expect(screen.getByText("Forgot Van't Hoff factor for K₂SO₄")).toBeInTheDocument();
+    expect(screen.getByText('Mock #4')).toBeInTheDocument();
+
+    // Tap +1 Repeat chip -> increments to 2×
+    fireEvent.click(
+      screen.getByRole('button', { name: /Log repeat for "Forgot Van't Hoff factor for K₂SO₄"/i })
+    );
+    expect(screen.getByText('2×')).toBeInTheDocument();
+
+    // Switch to By Chapter summary view and open Chapter Summary sheet
+    fireEvent.click(screen.getByRole('tab', { name: /^By Chapter$/i }));
+    expect(screen.getByText('Solutions')).toBeInTheDocument();
+    expect(screen.getByText('2× total hits')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Solutions/i }));
+    const summaryDialog = screen.getByRole('dialog');
+    expect(within(summaryDialog).getByText(/Repeated hotspot/i)).toBeInTheDocument();
+
+    // Generate Gemini Revision Summary for Mistakes
+    fireEvent.click(within(summaryDialog).getByRole('button', { name: /Generate Summary/i }));
+    await waitFor(() => {
+      expect(
+        within(summaryDialog).getByText(/Electrolyte Van’t Hoff factor/i)
+      ).toBeInTheDocument();
+    });
+
+    // Switch scope inside Chapter Summary Sheet to Doubts and generate Doubts summary
+    fireEvent.click(within(summaryDialog).getByRole('tab', { name: /^Doubts \(1\)$/i }));
+    expect(within(summaryDialog).getByText('Abnormal molar mass association case')).toBeInTheDocument();
+
+    fireEvent.click(within(summaryDialog).getByRole('button', { name: /Generate Summary/i }));
+    await waitFor(() => {
+      expect(within(summaryDialog).getByText(/Dimerization lowers particle count/i)).toBeInTheDocument();
+    });
+  });
+
+  it('supports custom manual mistake creation, Quick Fill with Gemini, and converting a Doubt into a Mistake', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    mistakes: [
+                      {
+                        title: 'Sign error in mirror magnification',
+                        mistakeText: 'Used +v/u instead of -v/u for spherical mirror',
+                        correctionNote: 'Mirror m = -v/u; Lens m = +v/u',
+                        mistakeType: 'silly',
+                        subjectId: 'physics',
+                        chapterId: 'phy-12-ray-optics',
+                        sourceLabel: 'PYQ 2019',
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    } as unknown as Response);
+
+    render(<App />);
+
+    // Add Gemini API key
+    clickTab('Settings');
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'AIzaQuickFillKey' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save Gemini Settings/i }));
+
+    // Study -> Mistakes -> Log Mistake -> Quick Fill with Gemini
+    clickTab('Study');
+    fireEvent.click(screen.getByRole('tab', { name: /^Mistakes/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Log Mistake/i }));
+
+    const composer = screen.getByRole('dialog');
+    fireEvent.click(within(composer).getByRole('button', { name: /Quick Fill with Gemini/i }));
+    fireEvent.change(within(composer).getByPlaceholderText(/Paste messy error notes/i), {
+      target: { value: 'Used +v/u for mirror magnification in PYQ 2019 Ray Optics' },
+    });
+    fireEvent.click(within(composer).getByRole('button', { name: /Extract with Gemini/i }));
+
+    await waitFor(() => {
+      expect(within(composer).getByLabelText(/Short Title/i)).toHaveValue(
+        'Sign error in mirror magnification'
+      );
+    });
+
+    fireEvent.click(within(composer).getByRole('button', { name: /Save Mistake/i }));
+    expect(screen.getByText('Sign error in mirror magnification')).toBeInTheDocument();
+
+    // Now create a Doubt and convert it into a Mistake via 1-tap Log as Mistake
+    fireEvent.click(screen.getByRole('tab', { name: /^Doubts/i }));
+    fireEvent.click(screen.getByRole('button', { name: /New Doubt/i }));
+    const doubtDialog = screen.getByRole('dialog');
+    fireEvent.change(within(doubtDialog).getByLabelText(/Short Title/i), {
+      target: { value: 'Bryophyte dominant phase confusion' },
+    });
+    fireEvent.click(within(doubtDialog).getByRole('button', { name: /Save Doubt/i }));
+
+    // Open doubt detail and click Log as Mistake
+    fireEvent.click(screen.getByText('Bryophyte dominant phase confusion'));
+    const doubtDetail = screen.getByRole('dialog');
+    fireEvent.click(within(doubtDetail).getByRole('button', { name: /Log as Mistake/i }));
+
+    const convertedComposer = screen.getByRole('dialog');
+    expect(within(convertedComposer).getByText('Log Doubt as Mistake')).toBeInTheDocument();
+    expect(within(convertedComposer).getByLabelText(/Short Title/i)).toHaveValue(
+      'Bryophyte dominant phase confusion'
+    );
+    fireEvent.click(within(convertedComposer).getByRole('radio', { name: /NCERT Trap/i }));
+    fireEvent.click(within(convertedComposer).getByRole('button', { name: /Save Mistake/i }));
+
+    // Verify converted mistake appears in Study -> Mistakes
+    fireEvent.click(screen.getByRole('tab', { name: /^Mistakes/i }));
+    expect(screen.getByText('Bryophyte dominant phase confusion')).toBeInTheDocument();
+  });
 });

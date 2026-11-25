@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Circle,
   Loader2,
@@ -16,9 +17,14 @@ import { ChapterPickerControl } from './ChapterPickerControl';
 interface DoubtDetailSheetProps {
   doubt: DoubtItem | null;
   onClose: () => void;
+  onConvertToMistake?: (doubt: DoubtItem) => void;
 }
 
-export const DoubtDetailSheet: React.FC<DoubtDetailSheetProps> = ({ doubt, onClose }) => {
+export const DoubtDetailSheet: React.FC<DoubtDetailSheetProps> = ({
+  doubt,
+  onClose,
+  onConvertToMistake,
+}) => {
   const {
     preferences,
     studySettings,
@@ -122,27 +128,49 @@ export const DoubtDetailSheet: React.FC<DoubtDetailSheetProps> = ({ doubt, onClo
           </button>
         </div>
 
-        {/* Status Toggle & Chapter Edit trigger */}
-        <div className="row-between">
-          <button
-            type="button"
-            className={`btn btn--sm btn--pill ${
-              doubt.status === 'resolved' ? 'btn--tinted' : 'btn--secondary'
-            }`}
-            onClick={() => toggleDoubtStatus(doubt.id)}
-          >
-            {doubt.status === 'resolved' ? (
-              <>
-                <CheckCircle2 size={14} />
-                Resolved
-              </>
-            ) : (
-              <>
-                <Circle size={14} />
-                Mark Resolved
-              </>
+        {/* Status Toggle, Log as Mistake & Chapter Edit trigger */}
+        <div className="row-between" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <div className="row-gap" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className={`btn btn--sm btn--pill ${
+                doubt.status === 'resolved' ? 'btn--tinted' : 'btn--secondary'
+              }`}
+              onClick={() => toggleDoubtStatus(doubt.id)}
+            >
+              {doubt.status === 'resolved' ? (
+                <>
+                  <CheckCircle2 size={14} />
+                  Resolved
+                </>
+              ) : (
+                <>
+                  <Circle size={14} />
+                  Mark Resolved
+                </>
+              )}
+            </button>
+
+            {onConvertToMistake && (
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm btn--pill"
+                onClick={() =>
+                  onConvertToMistake({
+                    ...doubt,
+                    title: title.trim() || doubt.title,
+                    questionText: questionText.trim() || doubt.questionText,
+                    resolutionNote,
+                    subjectId,
+                    chapterId,
+                  })
+                }
+              >
+                <AlertTriangle size={13} />
+                Log as Mistake
+              </button>
             )}
-          </button>
+          </div>
 
           <button
             type="button"

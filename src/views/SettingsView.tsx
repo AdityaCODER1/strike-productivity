@@ -56,6 +56,7 @@ export const SettingsView: React.FC = () => {
     logs,
     chapterProgress,
     doubts,
+    mistakes,
     studySettings,
     preferences,
     updatePreferences,
@@ -251,6 +252,7 @@ export const SettingsView: React.FC = () => {
     const md = serializeToMarkdown(tasks, logs, new Date(), {
       chapterProgress,
       doubts,
+      mistakes,
       studySettings,
     });
     triggerFileDownload(`strike-export-${toDateKey()}.md`, md, 'text/markdown;charset=utf-8');
@@ -261,6 +263,7 @@ export const SettingsView: React.FC = () => {
     const json = serializeToJson(tasks, logs, preferences.categories, new Date(), {
       chapterProgress,
       doubts,
+      mistakes,
       studySettings,
     });
     triggerFileDownload(`strike-backup-${toDateKey()}.json`, json, 'application/json');

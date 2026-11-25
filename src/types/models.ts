@@ -31,6 +31,7 @@ export const DEFAULT_CATEGORIES: CategoryConfig[] = [
   { id: 'cat-health', name: 'Health', colorToken: 'green' },
   { id: 'cat-learning', name: 'Learning', colorToken: 'amber' },
   { id: 'cat-doubts', name: 'Doubts', colorToken: 'coral' },
+  { id: 'cat-mistakes', name: 'Mistakes', colorToken: 'coral' },
   { id: 'cat-home', name: 'Home', colorToken: 'slate' },
   { id: 'cat-social', name: 'Social', colorToken: 'cyan' },
 ];
@@ -95,6 +96,12 @@ export interface ChapterStudyState {
   aiSummary?: string;
   lastEvaluatedAt?: number;
   completedPyqYears: number[];
+  mistakesSummaryAi?: string;
+  mistakesSummaryUpdatedAt?: number;
+  mistakesSummaryCount?: number;
+  doubtsSummaryAi?: string;
+  doubtsSummaryUpdatedAt?: number;
+  doubtsSummaryCount?: number;
   updatedAt: number;
 }
 
@@ -113,6 +120,57 @@ export interface DoubtItem {
   resolutionNote: string;
   aiExplanation?: string;
   source: DoubtSource;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type MistakeType = 'conceptual' | 'silly' | 'formula' | 'misread' | 'ncert_trap';
+export type MistakeStatus = 'active' | 'fixed';
+export type MistakeSource = 'manual' | 'brain_dump' | 'from_doubt' | 'gemini_quick';
+
+export const MISTAKE_TYPES: MistakeType[] = [
+  'conceptual',
+  'silly',
+  'formula',
+  'misread',
+  'ncert_trap',
+];
+
+export const MISTAKE_TYPE_META: Record<
+  MistakeType,
+  { label: string; shortLabel: string; colorToken: CategoryColorToken }
+> = {
+  conceptual: { label: 'Conceptual Gap', shortLabel: 'Conceptual', colorToken: 'coral' },
+  silly: { label: 'Silly / Calculation', shortLabel: 'Silly', colorToken: 'amber' },
+  formula: { label: 'Formula / Memory', shortLabel: 'Formula', colorToken: 'blue' },
+  misread: { label: 'Misread Question', shortLabel: 'Misread', colorToken: 'cyan' },
+  ncert_trap: { label: 'NCERT Fact / Trap', shortLabel: 'NCERT Trap', colorToken: 'teal' },
+};
+
+export function isValidMistakeType(value: unknown): value is MistakeType {
+  return (
+    value === 'conceptual' ||
+    value === 'silly' ||
+    value === 'formula' ||
+    value === 'misread' ||
+    value === 'ncert_trap'
+  );
+}
+
+export interface MistakeItem {
+  id: string;
+  subjectId: StudySubjectId;
+  chapterId: string;
+  title: string;
+  mistakeText: string;
+  correctionNote: string;
+  mistakeType: MistakeType;
+  sourceLabel?: string;
+  status: MistakeStatus;
+  repeatCount: number;
+  lastRepeatedAt?: number;
+  linkedDoubtId?: string;
+  source: MistakeSource;
   createdAt: number;
   updatedAt: number;
 }
@@ -151,7 +209,7 @@ export interface FirebaseWebConfig {
 }
 
 export interface StrikeExportPayload {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   exportedAt: string;
   app: 'Strike';
   tasks: TaskItem[];
@@ -159,6 +217,7 @@ export interface StrikeExportPayload {
   categories: CategoryConfig[];
   chapterProgress?: Record<string, ChapterStudyState>;
   doubts?: DoubtItem[];
+  mistakes?: MistakeItem[];
   studySettings?: StudySettings;
 }
 

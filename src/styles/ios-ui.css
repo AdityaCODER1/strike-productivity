@@ -1396,6 +1396,184 @@ button {
   word-break: break-word;
 }
 
+/* Compact 4-item segmented control for Study sub-tabs */
+.ios-segmented--compact .ios-segmented-btn {
+  padding: 7px 6px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* Mistake Log & Per-Chapter Summary Views */
+.mistake-ai-zone {
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-hairline);
+  border-radius: 16px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mistake-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-hairline);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.repeat-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-hairline);
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: transform 0.14s var(--ease-spring), background-color 0.16s ease,
+    border-color 0.16s ease, color 0.16s ease;
+}
+
+.repeat-chip-btn:active {
+  transform: scale(0.93);
+}
+
+.repeat-chip-btn--hot {
+  background: var(--accent-coral-soft, rgba(255, 69, 58, 0.16));
+  border-color: rgba(255, 69, 58, 0.34);
+  color: var(--accent-coral);
+}
+
+.repeat-badge-inline {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-coral-soft, rgba(255, 69, 58, 0.16));
+  color: var(--accent-coral);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.cheat-sheet-rule {
+  font-size: 13px;
+  line-height: 1.42;
+  color: var(--accent-green);
+  word-break: break-word;
+}
+
+.chapter-summary-link-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-blue-soft);
+  border: 1px solid rgba(10, 132, 255, 0.24);
+  color: var(--accent-blue);
+  font-size: 11.5px;
+  font-weight: 620;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: transform 0.14s var(--ease-spring);
+}
+
+.chapter-summary-link-pill:active {
+  transform: scale(0.95);
+}
+
+.chapter-summary-card {
+  width: 100%;
+  background: var(--bg-elevated-1);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--inner-specular);
+  padding: 14px 15px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  text-align: left;
+  transition: background-color 0.16s ease, transform 0.14s var(--ease-spring);
+}
+
+.chapter-summary-card:active {
+  background: rgba(255, 255, 255, 0.04);
+  transform: scale(0.99);
+}
+
+.summary-stat-card {
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-hairline);
+  border-radius: 16px;
+  padding: 13px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.summary-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.summary-stat-cell {
+  background: var(--bg-elevated-1);
+  border: 1px solid var(--border-hairline);
+  border-radius: 12px;
+  padding: 9px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.summary-stat-val {
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.summary-stat-lbl {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.summary-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.summary-hotspot-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
 /* Desktop framing refinement */
 @media (min-width: 560px) {
   .app-shell {

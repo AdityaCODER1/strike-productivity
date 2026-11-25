@@ -222,6 +222,15 @@ export function isDoubtsCategoryName(category?: string | null): boolean {
   return normalized === 'doubts' || normalized === 'doubt';
 }
 
+export function isMistakesCategoryName(category?: string | null): boolean {
+  const normalized = (category ?? '').trim().toLowerCase();
+  return normalized === 'mistakes' || normalized === 'mistake';
+}
+
 export function isStudyTaggedCategory(category?: string | null): boolean {
-  return isLearningCategoryName(category) || isDoubtsCategoryName(category);
+  return (
+    isLearningCategoryName(category) ||
+    isDoubtsCategoryName(category) ||
+    isMistakesCategoryName(category)
+  );
 }

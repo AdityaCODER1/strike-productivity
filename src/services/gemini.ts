@@ -6,10 +6,22 @@ import {
   getChapterById,
   getSubjectMeta,
   isDoubtsCategoryName,
+  isMistakesCategoryName,
   isStudyTaggedCategory,
   isValidSubjectId,
 } from '../data/ncertCatalog';
-import { CategoryConfig, DEFAULT_GEMINI_MODEL, TaskBucket, TaskItem } from '../types/models';
+import {
+  CategoryConfig,
+  DEFAULT_GEMINI_MODEL,
+  DoubtItem,
+  MISTAKE_TYPES,
+  MISTAKE_TYPE_META,
+  MistakeItem,
+  MistakeType,
+  TaskBucket,
+  TaskItem,
+  isValidMistakeType,
+} from '../types/models';
 import { splitDataUrl } from '../utils/imageCompression';
 
 export interface ParsedCompletedActivity {
@@ -36,11 +48,24 @@ export interface ParsedBrainDumpDoubt {
   pyqYear: number | null;
 }
 
+export interface ParsedBrainDumpMistake {
+  title: string;
+  mistakeText: string;
+  correctionNote: string;
+  mistakeType: MistakeType;
+  subjectId: StudySubjectId;
+  chapterId: string;
+  sourceLabel?: string;
+}
+
 export interface BrainDumpAnalysisResult {
   completedActivities: ParsedCompletedActivity[];
   unfinishedTasks: ParsedUnfinishedTask[];
   doubts: ParsedBrainDumpDoubt[];
+  mistakes: ParsedBrainDumpMistake[];
 }
+
+export type BrainDumpFocusMode = 'all' | 'mistakes';
 
 export interface BrainDumpRequestOptions {
   apiKey: string;
@@ -50,6 +75,7 @@ export interface BrainDumpRequestOptions {
   openTasks: Pick<TaskItem, 'id' | 'title' | 'bucket'>[];
   dateKey: string;
   includeArchivedNcert?: boolean;
+  focusMode?: BrainDumpFocusMode;
   fetchImpl?: typeof fetch;
 }
 
@@ -197,14 +223,14 @@ export function buildBrainDumpResponseSchema(
       nullable: true,
       enum: SUBJECT_ENUM,
       description:
-        'Only set for Learning or Doubts items matching Physics, Chemistry, or Biology; MUST be null for all other categories.',
+        'Only set for Learning, Doubts, or Mistakes items matching Physics, Chemistry, or Biology; MUST be null for all other categories.',
     },
     chapterId: {
       type: 'STRING',
       nullable: true,
       enum: activeChapterIds,
       description:
-        'Exact NCERT chapter id from NCERT_CATALOG only when category is Learning or Doubts; MUST be null for non-study items or if unclear.',
+        'Exact NCERT chapter id from NCERT_CATALOG only when category is Learning, Doubts, or Mistakes; MUST be null for non-study items or if unclear.',
     },
   };
 
@@ -267,7 +293,7 @@ export function buildBrainDumpResponseSchema(
       doubts: {
         type: 'ARRAY',
         description:
-          'Explicit study doubts, confusions, or tricky Physics/Chemistry/Biology questions the user mentioned wanting to review later.',
+          'Explicit study doubts, confusions, or tricky Physics/Chemistry/Biology questions the user still needs explained or wants to review later.',
         items: {
           type: 'OBJECT',
           properties: {
@@ -298,6 +324,52 @@ export function buildBrainDumpResponseSchema(
           required: ['title', 'questionText', 'subjectId', 'chapterId'],
         },
       },
+      mistakes: {
+        type: 'ARRAY',
+        description:
+          'Explicit study mistakes, wrong answers, silly/calculation slips, forgotten formulas, misread options, or NCERT traps made during tests, PYQs, or practice.',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            title: {
+              type: 'STRING',
+              description: 'Short clear summary of the mistake (max 90 chars).',
+            },
+            mistakeText: {
+              type: 'STRING',
+              description: 'Clear description of what went wrong or what error the user made.',
+            },
+            correctionNote: {
+              type: 'STRING',
+              description:
+                'Concise correct concept, formula, or rule to remember next time (infer briefly if obvious from NCERT, else empty string).',
+            },
+            mistakeType: {
+              type: 'STRING',
+              enum: MISTAKE_TYPES,
+              description:
+                'Root cause: conceptual (concept gap), silly (calculation/sign/arithmetic slip), formula (forgot formula/constant/value), misread (missed NOT/incorrect/units), or ncert_trap (NCERT line/exception/fact trap).',
+            },
+            subjectId: {
+              type: 'STRING',
+              enum: SUBJECT_ENUM,
+              description: 'PCB subject for this mistake.',
+            },
+            chapterId: {
+              type: 'STRING',
+              enum: activeChapterIds,
+              description: 'Best matching NCERT chapter id from NCERT_CATALOG.',
+            },
+            sourceLabel: {
+              type: 'STRING',
+              nullable: true,
+              description:
+                'Optional short exam/test/source label if mentioned (e.g. "Mock #4", "PYQ 2022", "NCERT Back Ex"); otherwise null.',
+            },
+          },
+          required: ['title', 'mistakeText', 'correctionNote', 'mistakeType', 'subjectId', 'chapterId'],
+        },
+      },
     },
     required: ['completedActivities', 'unfinishedTasks'],
   };
@@ -308,23 +380,41 @@ export function buildBrainDumpPrompt(
   categoryNames: string[],
   openTasks: Pick<TaskItem, 'id' | 'title' | 'bucket'>[],
   dateKey: string,
-  includeArchivedNcert: boolean = false
+  includeArchivedNcert: boolean = false,
+  focusMode: BrainDumpFocusMode = 'all'
 ): string {
   const openTasksContext =
     openTasks.length > 0
       ? openTasks.map((t) => `- id="${t.id}" [${t.bucket}]: ${t.title}`).join('\n')
       : '(none)';
 
+  const modeLead =
+    focusMode === 'mistakes'
+      ? `You are Strike's NCERT PCB mistake-analysis assistant parsing a user's mistake dump for ${dateKey}. The user is specifically logging mistakes made in tests, PYQs, or practice.`
+      : `You are Strike's personal daily log & NCERT PCB study assistant organizing a user's brain dump for ${dateKey}.`;
+
+  const modeSpecificRules =
+    focusMode === 'mistakes'
+      ? [
+          '1. Split every distinct mistake or error into the mistakes array with a crisp title, clear mistakeText (what went wrong), helpful correctionNote (the exact rule/formula/NCERT fact to remember), best mistakeType (conceptual | silly | formula | misread | ncert_trap), optional sourceLabel (e.g. "Mock #4", "NEET 2022"), and exact subjectId + chapterId from NCERT_CATALOG.',
+          '2. Leave completedActivities and unfinishedTasks empty UNLESS the user explicitly mentions a separate finished task or follow-up to-do.',
+          '3. If the user mentions an unresolved question they are still stuck on rather than a mistake made, place it in doubts.',
+          '4. Do not invent mistakes, activities, or doubts the user did not mention.',
+        ]
+      : [
+          '1. Split the text into distinct, concise completed activities (sentence case, no trailing period, clear action verb when natural).',
+          `2. Assign EVERY item strictly one category from: ${categoryNames.join(', ')}.`,
+          '3. If a completed activity clearly completes one of the OPEN_TASKS below, set matchedOpenTaskId to its exact id; otherwise set matchedOpenTaskId to null.',
+          '4. If the user mentions something unfinished, skipped, blocked, or to do tomorrow/next, extract it into unfinishedTasks (do NOT duplicate items already in OPEN_TASKS).',
+          '5. For items categorized as "Learning", "Doubts", or "Mistakes" about Physics, Chemistry, or Biology, tag subjectId and exact chapterId from NCERT_CATALOG below. For ALL non-study categories (Work, Personal, Health, Home, Social, etc.), ALWAYS set subjectId=null and chapterId=null.',
+          '6. Distinguish Doubts vs Mistakes: if the user is still confused/stuck on a question and needs an explanation later, put it in doubts. If the user got a question wrong, made a silly/sign/formula slip, misread an option, or fell for an NCERT trap in a mock/PYQ/practice, put it in mistakes with subjectId, chapterId, mistakeType, correctionNote, and optional sourceLabel (and do not duplicate it as a completed activity unless they also did separate study work).',
+          '7. Do not invent activities, doubts, or mistakes the user did not mention.',
+        ];
+
   return [
-    `You are Strike's personal daily log & NCERT PCB study assistant organizing a user's brain dump for ${dateKey}.`,
+    modeLead,
     'Rules:',
-    '1. Split the text into distinct, concise completed activities (sentence case, no trailing period, clear action verb when natural).',
-    `2. Assign EVERY item strictly one category from: ${categoryNames.join(', ')}.`,
-    '3. If a completed activity clearly completes one of the OPEN_TASKS below, set matchedOpenTaskId to its exact id; otherwise set matchedOpenTaskId to null.',
-    '4. If the user mentions something unfinished, skipped, blocked, or to do tomorrow/next, extract it into unfinishedTasks (do NOT duplicate items already in OPEN_TASKS).',
-    '5. For items categorized as "Learning" (or "Doubts") about Physics, Chemistry, or Biology, tag subjectId and exact chapterId from NCERT_CATALOG below. For ALL non-study categories (Work, Personal, Health, Home, Social, etc.), ALWAYS set subjectId=null and chapterId=null.',
-    '6. If the user explicitly mentions a study doubt, confusion, or question they got stuck on and need to review later, extract it into the doubts array with the best matching subjectId and chapterId (and do not duplicate it as a completed Learning activity unless they also solved/studied something else).',
-    '7. Do not invent activities or doubts the user did not mention.',
+    ...modeSpecificRules,
     '',
     'OPEN_TASKS:',
     openTasksContext,
@@ -335,6 +425,54 @@ export function buildBrainDumpPrompt(
     'USER_BRAIN_DUMP:',
     rawText.trim(),
   ].join('\n');
+}
+
+function sanitizeParsedMistakes(rawList: unknown, includeArchived: boolean = false): ParsedBrainDumpMistake[] {
+  if (!Array.isArray(rawList)) return [];
+  const activeChapters = getActiveChapters(includeArchived);
+
+  return rawList
+    .filter((item): item is Partial<ParsedBrainDumpMistake> =>
+      Boolean(
+        item &&
+          typeof item === 'object' &&
+          ((typeof (item as { title?: unknown }).title === 'string' &&
+            (item as { title: string }).title.trim()) ||
+            (typeof (item as { mistakeText?: unknown }).mistakeText === 'string' &&
+              (item as { mistakeText: string }).mistakeText.trim()))
+      )
+    )
+    .map((item) => {
+      const chap = getChapterById(typeof item.chapterId === 'string' ? item.chapterId : undefined);
+      const subjectId: StudySubjectId =
+        chap?.subjectId ?? (isValidSubjectId(item.subjectId) ? item.subjectId : 'physics');
+      const fallbackChapter =
+        chap?.id ?? activeChapters.find((c) => c.subjectId === subjectId)?.id ?? '';
+      const cleanMistakeText =
+        typeof item.mistakeText === 'string' && item.mistakeText.trim()
+          ? item.mistakeText.trim()
+          : (item.title ?? '').trim();
+      const cleanTitle =
+        typeof item.title === 'string' && item.title.trim()
+          ? item.title.trim()
+          : cleanMistakeText.slice(0, 80);
+      const cleanCorrection =
+        typeof item.correctionNote === 'string' ? item.correctionNote.trim() : '';
+      const cleanSource =
+        typeof item.sourceLabel === 'string' && item.sourceLabel.trim()
+          ? item.sourceLabel.trim()
+          : undefined;
+      return {
+        title: cleanTitle,
+        mistakeText: cleanMistakeText,
+        correctionNote: cleanCorrection,
+        mistakeType: isValidMistakeType(item.mistakeType) ? item.mistakeType : 'conceptual',
+        subjectId,
+        chapterId: fallbackChapter,
+        ...(cleanSource ? { sourceLabel: cleanSource } : {}),
+      };
+    })
+    .filter((m) => Boolean(m.chapterId));
 }
 
 export function parseGeminiBrainDumpPayload(
@@ -418,7 +556,9 @@ export function parseGeminiBrainDumpPayload(
         .filter((d) => Boolean(d.chapterId))
     : [];
 
-  // Also promote any completedActivities explicitly categorized as Doubts with valid chapter into doubts if not already captured
+  const mistakes: ParsedBrainDumpMistake[] = sanitizeParsedMistakes(parsed.mistakes, true);
+
+  // Promote any completedActivities explicitly categorized as Doubts or Mistakes with valid chapter if not already captured
   for (const act of completedActivities) {
     if (
       isDoubtsCategoryName(act.category) &&
@@ -434,9 +574,24 @@ export function parseGeminiBrainDumpPayload(
         pyqYear: null,
       });
     }
+    if (
+      isMistakesCategoryName(act.category) &&
+      act.subjectId &&
+      act.chapterId &&
+      !mistakes.some((m) => m.title.toLowerCase() === act.title.toLowerCase())
+    ) {
+      mistakes.push({
+        title: act.title,
+        mistakeText: act.title,
+        correctionNote: '',
+        mistakeType: 'conceptual',
+        subjectId: act.subjectId,
+        chapterId: act.chapterId,
+      });
+    }
   }
 
-  return { completedActivities, unfinishedTasks, doubts };
+  return { completedActivities, unfinishedTasks, doubts, mistakes };
 }
 
 export async function analyzeBrainDumpWithGemini(
@@ -449,7 +604,11 @@ export async function analyzeBrainDumpWithGemini(
 
   const trimmedText = options.rawText.trim();
   if (!trimmedText) {
-    throw new Error('Write a quick note about what you did first.');
+    throw new Error(
+      options.focusMode === 'mistakes'
+        ? 'Write a quick note about the mistakes you made first.'
+        : 'Write a quick note about what you did first.'
+    );
   }
 
   const includeArchived = Boolean(options.includeArchivedNcert);
@@ -461,7 +620,8 @@ export async function analyzeBrainDumpWithGemini(
     categoryNames,
     options.openTasks,
     options.dateKey,
-    includeArchived
+    includeArchived,
+    options.focusMode ?? 'all'
   );
 
   const textPart = await callGeminiGenerateContent({
@@ -781,6 +941,231 @@ export async function explainDoubtWithGemini(options: {
   });
 
   return explanation.trim();
+}
+
+/**
+ * Parses raw mistake notes (single or multiple mistakes) into structured NCERT PCB mistake items.
+ */
+export async function extractMistakesFromTextWithGemini(options: {
+  apiKey: string;
+  model?: string;
+  rawText: string;
+  defaultSubjectId?: StudySubjectId;
+  defaultChapterId?: string;
+  includeArchivedNcert?: boolean;
+  fetchImpl?: typeof fetch;
+}): Promise<ParsedBrainDumpMistake[]> {
+  const trimmed = options.rawText.trim();
+  if (!trimmed) {
+    throw new Error('Paste or type your mistake notes first.');
+  }
+
+  const includeArchived = Boolean(options.includeArchivedNcert);
+  const activeChapterIds = getActiveChapters(includeArchived).map((c) => c.id);
+  const defaultChap = getChapterById(options.defaultChapterId);
+
+  const schema = {
+    type: 'OBJECT',
+    properties: {
+      mistakes: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            title: {
+              type: 'STRING',
+              description: 'Short clear summary of the mistake (max 90 chars).',
+            },
+            mistakeText: {
+              type: 'STRING',
+              description: 'Clear description of what went wrong.',
+            },
+            correctionNote: {
+              type: 'STRING',
+              description:
+                'Concise correct concept, formula, or NCERT rule to remember next time.',
+            },
+            mistakeType: {
+              type: 'STRING',
+              enum: MISTAKE_TYPES,
+              description: 'Root cause category.',
+            },
+            subjectId: {
+              type: 'STRING',
+              enum: SUBJECT_ENUM,
+              description: 'PCB subject.',
+            },
+            chapterId: {
+              type: 'STRING',
+              enum: activeChapterIds,
+              description: 'Best matching NCERT chapter id from NCERT_CATALOG.',
+            },
+            sourceLabel: {
+              type: 'STRING',
+              nullable: true,
+              description: 'Optional test/PYQ source label if mentioned; otherwise null.',
+            },
+          },
+          required: [
+            'title',
+            'mistakeText',
+            'correctionNote',
+            'mistakeType',
+            'subjectId',
+            'chapterId',
+          ],
+        },
+      },
+    },
+    required: ['mistakes'],
+  };
+
+  const hintLines: string[] = [];
+  if (defaultChap) {
+    hintLines.push(
+      `DEFAULT_CONTEXT (use only if the note does not specify a different chapter): ${defaultChap.id} (${getSubjectMeta(defaultChap.subjectId).name} - ${defaultChap.title})`
+    );
+  } else if (options.defaultSubjectId) {
+    hintLines.push(
+      `DEFAULT_SUBJECT_HINT (use only if unclear): ${options.defaultSubjectId}`
+    );
+  }
+
+  const prompt = [
+    'You are an NCERT Class 11/12 & NEET PCB mentor structuring raw student mistake notes into clean Mistake Log entries.',
+    'Rules:',
+    '1. Split the note into one or more distinct mistakes.',
+    '2. For each mistake, assign the best matching subjectId and exact chapterId from NCERT_CATALOG.',
+    '3. Classify mistakeType strictly as one of: conceptual, silly, formula, misread, ncert_trap.',
+    '4. Write a crisp correctionNote stating the exact correct formula, NCERT fact, or exam rule to avoid repeating it (use clear Unicode math/chem symbols, no raw LaTeX).',
+    '5. Extract sourceLabel if the note mentions a mock test, PYQ year, or book/exercise; otherwise null.',
+    ...hintLines,
+    '',
+    'NCERT_CATALOG (chapterId | subjectId | Class | Title):',
+    buildCompactCatalogPrompt(includeArchived),
+    '',
+    'STUDENT_MISTAKE_NOTES:',
+    trimmed,
+  ].join('\n');
+
+  const textPart = await callGeminiGenerateContent({
+    apiKey: options.apiKey,
+    model: options.model,
+    parts: [{ text: prompt }],
+    temperature: 0.2,
+    responseSchema: schema,
+    fetchImpl: options.fetchImpl,
+  });
+
+  const parsed = JSON.parse(cleanModelJson(textPart)) as { mistakes?: unknown };
+  return sanitizeParsedMistakes(parsed.mistakes, includeArchived);
+}
+
+export type ChapterSummaryScope = 'mistakes' | 'doubts';
+
+/**
+ * Generates a focused pre-exam revision summary for all Mistakes or all Doubts in a single NCERT chapter.
+ */
+export async function summarizeChapterItemsWithGemini(options: {
+  apiKey: string;
+  model?: string;
+  chapter: NcertChapter;
+  scope: ChapterSummaryScope;
+  mistakes?: MistakeItem[];
+  doubts?: DoubtItem[];
+  fetchImpl?: typeof fetch;
+}): Promise<string> {
+  const subjectMeta = getSubjectMeta(options.chapter.subjectId);
+
+  if (options.scope === 'mistakes') {
+    const items = options.mistakes ?? [];
+    if (items.length === 0) {
+      throw new Error('Log at least one mistake in this chapter to generate a summary.');
+    }
+
+    const formatted = items
+      .map((m, idx) => {
+        const typeLabel = MISTAKE_TYPE_META[m.mistakeType]?.label ?? m.mistakeType;
+        const repeatTag = m.repeatCount > 1 ? ` | Repeated ${m.repeatCount}x` : '';
+        const srcTag = m.sourceLabel ? ` | Source: ${m.sourceLabel}` : '';
+        const statusTag = m.status === 'fixed' ? ' [Fixed]' : ' [Active]';
+        return [
+          `${idx + 1}. ${m.title}${statusTag} (${typeLabel}${repeatTag}${srcTag})`,
+          m.mistakeText && m.mistakeText !== m.title ? `   Error: ${m.mistakeText}` : '',
+          m.correctionNote ? `   Rule/Fix: ${m.correctionNote}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      })
+      .join('\n');
+
+    const prompt = [
+      `You are an experienced NCERT Class ${options.chapter.classLevel} ${subjectMeta.name} & NEET mentor creating a concise pre-exam Mistake Revision Summary for one chapter.`,
+      `Chapter: ${options.chapter.title}`,
+      '',
+      'Synthesize the student’s logged mistakes below into a crisp, high-yield summary:',
+      '1. Top Weak Spots & Patterns (call out recurring error types & repeated mistakes first)',
+      '2. Must-Remember Rules, Formulas & NCERT Traps (short scannable bullet points)',
+      '3. Quick Pre-Exam Check (1–2 concrete things to double-check before solving this chapter)',
+      'Keep it compact, scannable plain text / simple bullets without raw LaTeX delimiters.',
+      '',
+      'CHAPTER_MISTAKES:',
+      formatted,
+    ].join('\n');
+
+    const summary = await callGeminiGenerateContent({
+      apiKey: options.apiKey,
+      model: options.model,
+      parts: [{ text: prompt }],
+      temperature: 0.25,
+      fetchImpl: options.fetchImpl,
+    });
+
+    return summary.trim();
+  }
+
+  const items = options.doubts ?? [];
+  if (items.length === 0) {
+    throw new Error('Save at least one doubt in this chapter to generate a summary.');
+  }
+
+  const formatted = items
+    .map((d, idx) => {
+      const pyqTag = d.pyqYear ? ` | PYQ ${d.pyqYear}` : '';
+      const statusTag = d.status === 'resolved' ? ' [Resolved]' : ' [Open]';
+      return [
+        `${idx + 1}. ${d.title}${statusTag}${pyqTag}`,
+        d.questionText && d.questionText !== d.title ? `   Question: ${d.questionText}` : '',
+        d.resolutionNote ? `   Takeaway: ${d.resolutionNote}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+    })
+    .join('\n');
+
+  const prompt = [
+    `You are an experienced NCERT Class ${options.chapter.classLevel} ${subjectMeta.name} & NEET mentor creating a concise Chapter Doubts Revision Summary.`,
+    `Chapter: ${options.chapter.title}`,
+    '',
+    'Synthesize all of the student’s saved doubts for this chapter into a crisp, high-yield summary:',
+    '1. Core Confusion Themes (group related conceptual gaps across these doubts)',
+    '2. Key Clarifications & Takeaways (clear NCERT rules/formulas resolving the tricky spots)',
+    '3. Still-Open Focus (what to review next if any doubts remain open)',
+    'Keep it compact, scannable plain text / simple bullets without raw LaTeX delimiters.',
+    '',
+    'CHAPTER_DOUBTS:',
+    formatted,
+  ].join('\n');
+
+  const summary = await callGeminiGenerateContent({
+    apiKey: options.apiKey,
+    model: options.model,
+    parts: [{ text: prompt }],
+    temperature: 0.25,
+    fetchImpl: options.fetchImpl,
+  });
+
+  return summary.trim();
 }
 
 export async function testGeminiConnection(

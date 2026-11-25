@@ -11,7 +11,7 @@ import { SuggestionsSheet } from './components/SuggestionsSheet';
 
 const StrikeShell: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('today');
-  const { tasks, doubts, pendingSuggestions, toast } = useStrike();
+  const { tasks, doubts, mistakes, pendingSuggestions, toast } = useStrike();
 
   const openTodayCount = useMemo(
     () => tasks.filter((t) => !t.completed && t.bucket === 'today').length,
@@ -19,8 +19,10 @@ const StrikeShell: React.FC = () => {
   );
 
   const openDoubtsCount = useMemo(
-    () => doubts.filter((d) => d.status === 'open').length,
-    [doubts]
+    () =>
+      doubts.filter((d) => d.status === 'open').length +
+      mistakes.filter((m) => m.status === 'active').length,
+    [doubts, mistakes]
   );
 
   const suggestionsCount =

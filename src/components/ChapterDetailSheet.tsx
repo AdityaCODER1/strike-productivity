@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
   CheckCircle2,
+  FileText,
   HelpCircle,
   Loader2,
   Plus,
@@ -23,17 +25,22 @@ interface ChapterDetailSheetProps {
   chapter: NcertChapter | null;
   onClose: () => void;
   onOpenChapterDoubts?: (chapter: NcertChapter) => void;
+  onOpenChapterMistakes?: (chapter: NcertChapter) => void;
+  onOpenChapterSummary?: (chapter: NcertChapter, scope: 'mistakes' | 'doubts') => void;
 }
 
 export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
   chapter,
   onClose,
   onOpenChapterDoubts,
+  onOpenChapterMistakes,
+  onOpenChapterSummary,
 }) => {
   const {
     logs,
     tasks,
     doubts,
+    mistakes,
     chapterProgress,
     studySettings,
     preferences,
@@ -76,6 +83,11 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
     if (!chapter) return 0;
     return doubts.filter((d) => d.chapterId === chapter.id && d.status === 'open').length;
   }, [chapter, doubts]);
+
+  const chapterMistakesCount = useMemo(() => {
+    if (!chapter) return 0;
+    return mistakes.filter((m) => m.chapterId === chapter.id && m.status === 'active').length;
+  }, [chapter, mistakes]);
 
   if (!chapter) return null;
 
@@ -327,10 +339,34 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
           </div>
         )}
 
-        {/* Completed Work History */}
-        <div className="stack-sm">
-          <div className="row-between">
-            <span className="ios-group-title">Completed Work ({chapterLogs.length})</span>
+        {/* Chapter Mistakes, Doubts & Summary Shortcuts */}
+        {(onOpenChapterMistakes || onOpenChapterDoubts || onOpenChapterSummary) && (
+          <div className="filter-strip" style={{ paddingBottom: 0 }}>
+            {onOpenChapterSummary && (
+              <button
+                type="button"
+                className="btn btn--tinted btn--sm btn--pill"
+                onClick={() =>
+                  onOpenChapterSummary(
+                    chapter,
+                    chapterMistakesCount > 0 || chapterDoubtsCount === 0 ? 'mistakes' : 'doubts'
+                  )
+                }
+              >
+                <FileText size={13} />
+                Chapter Summary
+              </button>
+            )}
+            {onOpenChapterMistakes && (
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm btn--pill"
+                onClick={() => onOpenChapterMistakes(chapter)}
+              >
+                <AlertTriangle size={13} />
+                {chapterMistakesCount > 0 ? `${chapterMistakesCount} Mistakes` : 'Mistakes'}
+              </button>
+            )}
             {onOpenChapterDoubts && (
               <button
                 type="button"
@@ -338,9 +374,16 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
                 onClick={() => onOpenChapterDoubts(chapter)}
               >
                 <HelpCircle size={13} />
-                {chapterDoubtsCount > 0 ? `${chapterDoubtsCount} Open Doubts` : 'Doubts'}
+                {chapterDoubtsCount > 0 ? `${chapterDoubtsCount} Doubts` : 'Doubts'}
               </button>
             )}
+          </div>
+        )}
+
+        {/* Completed Work History */}
+        <div className="stack-sm">
+          <div className="row-between">
+            <span className="ios-group-title">Completed Work ({chapterLogs.length})</span>
           </div>
 
           {chapterLogs.length > 0 ? (

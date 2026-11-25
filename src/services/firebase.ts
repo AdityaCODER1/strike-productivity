@@ -29,6 +29,7 @@ import {
   DoubtItem,
   FirebaseWebConfig,
   LogEntry,
+  MistakeItem,
   TaskItem,
   UserPreferences,
 } from '../types/models';
@@ -302,6 +303,22 @@ export function subscribeUserDoubts(
   );
 }
 
+export function subscribeUserMistakes(
+  db: Firestore,
+  uid: string,
+  onData: (mistakes: MistakeItem[]) => void,
+  onError: (err: Error) => void
+): () => void {
+  return onSnapshot(
+    collection(db, 'users', uid, 'mistakes'),
+    (snap) => {
+      const items = snap.docs.map((d) => d.data() as MistakeItem);
+      onData(items);
+    },
+    (err) => onError(err)
+  );
+}
+
 function stripUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined));
 }
@@ -349,6 +366,22 @@ export async function deleteDoubtRemote(
   await deleteDoc(doc(db, 'users', uid, 'doubts', doubtId));
 }
 
+export async function upsertMistakeRemote(
+  db: Firestore,
+  uid: string,
+  mistake: MistakeItem
+): Promise<void> {
+  await setDoc(doc(db, 'users', uid, 'mistakes', mistake.id), stripUndefined({ ...mistake }));
+}
+
+export async function deleteMistakeRemote(
+  db: Firestore,
+  uid: string,
+  mistakeId: string
+): Promise<void> {
+  await deleteDoc(doc(db, 'users', uid, 'mistakes', mistakeId));
+}
+
 export async function savePreferencesRemote(
   db: Firestore,
   uid: string,
@@ -368,6 +401,8 @@ export async function syncBatchToRemote(
     upsertChapterProgress?: ChapterStudyState[];
     upsertDoubts?: DoubtItem[];
     deleteDoubtIds?: string[];
+    upsertMistakes?: MistakeItem[];
+    deleteMistakeIds?: string[];
     preferences?: UserPreferences;
   }
 ): Promise<void> {
@@ -396,6 +431,12 @@ export async function syncBatchToRemote(
   }
   for (const doubtId of payload.deleteDoubtIds ?? []) {
     batch.delete(doc(db, 'users', uid, 'doubts', doubtId));
+  }
+  for (const mistake of payload.upsertMistakes ?? []) {
+    batch.set(doc(db, 'users', uid, 'mistakes', mistake.id), stripUndefined({ ...mistake }));
+  }
+  for (const mistakeId of payload.deleteMistakeIds ?? []) {
+    batch.delete(doc(db, 'users', uid, 'mistakes', mistakeId));
   }
   if (payload.preferences) {
     batch.set(

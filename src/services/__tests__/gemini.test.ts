@@ -3,11 +3,14 @@ import { getChapterById } from '../../data/ncertCatalog';
 import { DEFAULT_CATEGORIES, DEFAULT_GEMINI_MODEL, GEMINI_MODEL_PRESETS } from '../../types/models';
 import {
   analyzeBrainDumpWithGemini,
+  buildBrainDumpPrompt,
   buildBrainDumpResponseSchema,
   evaluateChapterCoverageWithGemini,
   explainDoubtWithGemini,
   extractDoubtFromImageWithGemini,
+  extractMistakesFromTextWithGemini,
   parseGeminiBrainDumpPayload,
+  summarizeChapterItemsWithGemini,
 } from '../gemini';
 
 describe('gemini service', () => {
@@ -247,5 +250,185 @@ describe('gemini service', () => {
     });
 
     expect(explanation).toContain('Wheatstone');
+  });
+
+  it('extracts and sanitizes NCERT-tagged mistakes from Brain Dump payloads and supports mistake focusMode', () => {
+    const schema = buildBrainDumpResponseSchema(['Learning', 'Doubts', 'Mistakes']);
+    expect(schema.properties.mistakes).toBeDefined();
+
+    const mistakePrompt = buildBrainDumpPrompt(
+      'Mock 4: forgot i=3 for K2SO4',
+      ['Learning', 'Mistakes'],
+      [],
+      '2026-11-25',
+      false,
+      'mistakes'
+    );
+    expect(mistakePrompt).toContain('mistake-analysis assistant');
+    expect(mistakePrompt).toContain('Leave completedActivities and unfinishedTasks empty');
+
+    const raw = JSON.stringify({
+      completedActivities: [
+        {
+          title: 'Misread incorrect option in Plant Kingdom',
+          category: 'Mistakes',
+          matchedOpenTaskId: null,
+          subjectId: 'biology',
+          chapterId: 'bio-11-plant-kingdom',
+        },
+      ],
+      unfinishedTasks: [],
+      doubts: [],
+      mistakes: [
+        {
+          title: 'Wrong sign in mirror formula',
+          mistakeText: 'Took focal length of concave mirror as positive',
+          correctionNote: 'Concave mirror has negative f by Cartesian sign convention',
+          mistakeType: 'invalid_type',
+          subjectId: 'physics',
+          chapterId: 'phy-12-ray-optics',
+          sourceLabel: 'Mock #3',
+        },
+      ],
+    });
+
+    const parsed = parseGeminiBrainDumpPayload(raw, ['Learning', 'Mistakes'], new Set());
+    expect(parsed.mistakes).toHaveLength(2);
+    expect(parsed.mistakes[0]).toMatchObject({
+      title: 'Wrong sign in mirror formula',
+      mistakeType: 'conceptual',
+      chapterId: 'phy-12-ray-optics',
+      sourceLabel: 'Mock #3',
+    });
+    expect(parsed.mistakes[1]).toMatchObject({
+      title: 'Misread incorrect option in Plant Kingdom',
+      chapterId: 'bio-11-plant-kingdom',
+    });
+  });
+
+  it('parses multiple raw mistake notes with extractMistakesFromTextWithGemini', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    mistakes: [
+                      {
+                        title: 'Forgot Van’t Hoff factor',
+                        mistakeText: 'Used i=1 for K2SO4',
+                        correctionNote: 'i = 3 for dilute K2SO4',
+                        mistakeType: 'formula',
+                        subjectId: 'chemistry',
+                        chapterId: 'chem-12-solutions',
+                        sourceLabel: 'Mock #5',
+                      },
+                      {
+                        title: 'Confused bryophyte sporophyte dependence',
+                        mistakeText: 'Marked sporophyte as independent in mosses',
+                        correctionNote: 'In bryophytes, sporophyte is attached to photosynthetic gametophyte',
+                        mistakeType: 'ncert_trap',
+                        subjectId: 'biology',
+                        chapterId: 'bio-11-plant-kingdom',
+                        sourceLabel: null,
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    const items = await extractMistakesFromTextWithGemini({
+      apiKey: 'test-key',
+      rawText: 'Mock 5: forgot i=3 for K2SO4 and marked moss sporophyte independent',
+      fetchImpl: mockFetch as unknown as typeof fetch,
+    });
+
+    expect(items).toHaveLength(2);
+    expect(items[0].mistakeType).toBe('formula');
+    expect(items[0].sourceLabel).toBe('Mock #5');
+    expect(items[1].mistakeType).toBe('ncert_trap');
+    expect(items[1].sourceLabel).toBeUndefined();
+  });
+
+  it('generates per-chapter revision summaries for both Mistakes and Doubts', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: { parts: [{ text: 'Mistakes summary: Check Cartesian sign conventions.' }] },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: { parts: [{ text: 'Doubts summary: Review prism minimum deviation.' }] },
+            },
+          ],
+        }),
+      });
+
+    const chapter = getChapterById('phy-12-ray-optics')!;
+    const mistakeSummary = await summarizeChapterItemsWithGemini({
+      apiKey: 'test-key',
+      chapter,
+      scope: 'mistakes',
+      mistakes: [
+        {
+          id: 'm1',
+          subjectId: 'physics',
+          chapterId: chapter.id,
+          title: 'Lens sign slip',
+          mistakeText: 'Flipped R2 sign',
+          correctionNote: 'R2 < 0 for biconvex lens',
+          mistakeType: 'silly',
+          status: 'active',
+          repeatCount: 3,
+          source: 'manual',
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+      ],
+      fetchImpl: mockFetch as unknown as typeof fetch,
+    });
+
+    const doubtSummary = await summarizeChapterItemsWithGemini({
+      apiKey: 'test-key',
+      chapter,
+      scope: 'doubts',
+      doubts: [
+        {
+          id: 'd1',
+          subjectId: 'physics',
+          chapterId: chapter.id,
+          title: 'Minimum deviation angle',
+          questionText: 'When does i = e happen in a prism?',
+          status: 'open',
+          resolutionNote: 'At minimum deviation δm, r1 = r2 = A/2',
+          source: 'manual',
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+      ],
+      fetchImpl: mockFetch as unknown as typeof fetch,
+    });
+
+    expect(mistakeSummary).toContain('Cartesian sign conventions');
+    expect(doubtSummary).toContain('prism minimum deviation');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
