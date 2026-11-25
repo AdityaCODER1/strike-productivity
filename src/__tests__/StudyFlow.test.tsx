@@ -433,4 +433,48 @@ describe('Study Hub, NCERT Chapters, PYQs & Doubts end-to-end flows', () => {
     fireEvent.click(screen.getByRole('tab', { name: /^Mistakes/i }));
     expect(screen.getByText('Bryophyte dominant phase confusion')).toBeInTheDocument();
   });
+
+  it('displays chapter shortcuts with singular/plural counts in ChapterDetailSheet and navigates cleanly', () => {
+    render(<App />);
+    clickTab('Study');
+
+    // Add 1 active mistake in Chemistry -> Solutions
+    fireEvent.click(screen.getByRole('tab', { name: /^Mistakes/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Log Mistake/i }));
+    const composer = screen.getByRole('dialog');
+    fireEvent.click(within(composer).getByRole('radio', { name: 'Chemistry' }));
+    fireEvent.change(within(composer).getByLabelText(/NCERT Chapter/i), {
+      target: { value: 'chem-12-solutions' },
+    });
+    fireEvent.change(within(composer).getByLabelText(/Short Title/i), {
+      target: { value: 'Forgot Van’t Hoff factor' },
+    });
+    fireEvent.click(within(composer).getByRole('button', { name: /Save Mistake/i }));
+
+    // Go back to Chapters -> Chemistry -> open Solutions detail sheet
+    fireEvent.click(screen.getByRole('tab', { name: /^Chapters$/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Chemistry/i }));
+    fireEvent.click(screen.getByText('Solutions'));
+
+    const sheet = screen.getByRole('dialog');
+    const shortcuts = within(sheet).getByRole('group', { name: /Chapter shortcuts/i });
+    expect(within(shortcuts).getByRole('button', { name: /Chapter Summary/i })).toBeInTheDocument();
+    expect(within(shortcuts).getByRole('button', { name: /^1 Mistake$/i })).toBeInTheDocument();
+    expect(within(shortcuts).getByRole('button', { name: /^Doubts$/i })).toBeInTheDocument();
+
+    // Clicking "1 Mistake" navigates directly to filtered Mistakes sub-tab
+    fireEvent.click(within(shortcuts).getByRole('button', { name: /^1 Mistake$/i }));
+    expect(screen.getByRole('tab', { name: /^Mistakes/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Forgot Van’t Hoff factor')).toBeInTheDocument();
+
+    // Re-open Solutions detail sheet and open Chapter Summary shortcut
+    fireEvent.click(screen.getByRole('tab', { name: /^Chapters$/i }));
+    fireEvent.click(screen.getByText('Solutions'));
+    const reopenedSheet = screen.getByRole('dialog');
+    fireEvent.click(within(reopenedSheet).getByRole('button', { name: /Chapter Summary/i }));
+
+    const summaryDialog = screen.getByRole('dialog');
+    expect(within(summaryDialog).getByRole('heading', { name: 'Solutions' })).toBeInTheDocument();
+    expect(within(summaryDialog).getByText('Forgot Van’t Hoff factor')).toBeInTheDocument();
+  });
 });

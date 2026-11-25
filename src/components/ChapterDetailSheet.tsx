@@ -341,7 +341,7 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
 
         {/* Chapter Mistakes, Doubts & Summary Shortcuts */}
         {(onOpenChapterMistakes || onOpenChapterDoubts || onOpenChapterSummary) && (
-          <div className="filter-strip" style={{ paddingBottom: 0 }}>
+          <div className="filter-strip" role="group" aria-label="Chapter shortcuts">
             {onOpenChapterSummary && (
               <button
                 type="button"
@@ -364,7 +364,9 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
                 onClick={() => onOpenChapterMistakes(chapter)}
               >
                 <AlertTriangle size={13} />
-                {chapterMistakesCount > 0 ? `${chapterMistakesCount} Mistakes` : 'Mistakes'}
+                {chapterMistakesCount > 0
+                  ? `${chapterMistakesCount} ${chapterMistakesCount === 1 ? 'Mistake' : 'Mistakes'}`
+                  : 'Mistakes'}
               </button>
             )}
             {onOpenChapterDoubts && (
@@ -374,7 +376,9 @@ export const ChapterDetailSheet: React.FC<ChapterDetailSheetProps> = ({
                 onClick={() => onOpenChapterDoubts(chapter)}
               >
                 <HelpCircle size={13} />
-                {chapterDoubtsCount > 0 ? `${chapterDoubtsCount} Doubts` : 'Doubts'}
+                {chapterDoubtsCount > 0
+                  ? `${chapterDoubtsCount} ${chapterDoubtsCount === 1 ? 'Doubt' : 'Doubts'}`
+                  : 'Doubts'}
               </button>
             )}
           </div>
